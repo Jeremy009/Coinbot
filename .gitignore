@@ -61,6 +61,7 @@ dmypy.json
 # Environment variables
 .env
 .env.local
+settings.local.json
 
 # Frontend (if using Node.js)
 node_modules/
