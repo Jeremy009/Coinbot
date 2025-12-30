@@ -3,17 +3,16 @@
 import functools
 import logging
 import math
-from typing import Any, Callable, TypeVar
+import time
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from python_bitvavo_api.bitvavo import Bitvavo
 from tqdm import tqdm
 
 from coinbot_backend.config import settings
 from coinbot_backend.core.constants import TIME_RESOLUTIONS, TIME_SPANS
-from coinbot_backend.core.exceptions import (
-    CoinbotExceededNumAPICallsError,
-    CoinbotUnexpectedValueError,
-)
+from coinbot_backend.core.exceptions import CoinbotUnexpectedValueError
 from coinbot_backend.models.candles import OHLCVCandles
 
 logger = logging.getLogger(__name__)
@@ -22,15 +21,27 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def limit_api_calls(func: F) -> F:
-    """Decorator to check API rate limits before making calls."""
+    """
+    Decorator to check API rate limits before making calls.
+
+    If remaining calls are low (< 100), automatically waits for rate limit reset.
+    Bitvavo rate limits: 1000 calls/minute, resets on rolling 1-minute window.
+    If limit is exceeded, account is blocked for 1 minute.
+    """
 
     @functools.wraps(func)
     def wrapper(self: "BitvavoClient", *args: Any, **kwargs: Any) -> Any:
         remaining = self.get_remaining_limit()
+
+        # If we're running low on API calls, wait for the rate limit to reset
         if remaining < 100:
-            raise CoinbotExceededNumAPICallsError(
-                f"Only {remaining} API calls remaining. Request rejected to prevent blacklisting."
+            logger.warning(
+                f"Only {remaining} API calls remaining. Waiting 60 seconds for rate limit reset..."
             )
+            time.sleep(60)  # Wait 1 minute for rate limit to reset
+            remaining = self.get_remaining_limit()
+            logger.info(f"Rate limit reset. Now have {remaining} calls remaining.")
+
         return func(self, *args, **kwargs)
 
     return wrapper  # type: ignore

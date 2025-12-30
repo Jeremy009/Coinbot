@@ -6,10 +6,7 @@ import time
 import pytest
 
 from coinbot_backend.core.constants import TIME_RESOLUTIONS, TIME_SPANS
-from coinbot_backend.core.exceptions import (
-    CoinbotExceededNumAPICallsError,
-    CoinbotUnexpectedValueError,
-)
+from coinbot_backend.core.exceptions import CoinbotUnexpectedValueError
 from coinbot_backend.models.candles import OHLCVCandles
 from coinbot_backend.services.bitvavo_client import BitvavoClient
 
@@ -24,13 +21,36 @@ class TestBitvavoClient:
     """Integration tests for the Bitvavo client."""
 
     def test_limit_api_calls_decorator(self, bitvavo_client: BitvavoClient, monkeypatch):
-        """Test that the API rate limiter prevents excessive calls."""
-        # Mock get_remaining_limit to return a value below threshold
-        monkeypatch.setattr(bitvavo_client, "get_remaining_limit", lambda: 50)
+        """Test that the API rate limiter waits and retries when calls are low."""
+        # Track calls
+        call_count = {"get_remaining": 0, "sleep": 0}
 
-        # Verify that calling any decorated method raises the rate limit error
-        with pytest.raises(CoinbotExceededNumAPICallsError, match="Only 50 API calls remaining"):
-            bitvavo_client.get_total_deposited()
+        def mock_get_remaining_limit():
+            call_count["get_remaining"] += 1
+            # First call: low remaining (< 100), second call after sleep: reset to high value
+            return 50 if call_count["get_remaining"] == 1 else 950
+
+        def mock_sleep(seconds: float):
+            call_count["sleep"] += 1
+            assert seconds == 60  # Should wait exactly 60 seconds
+
+        # Apply mocks
+        monkeypatch.setattr(bitvavo_client, "get_remaining_limit", mock_get_remaining_limit)
+        monkeypatch.setattr(time, "sleep", mock_sleep)
+
+        # Mock the actual API call to avoid making real requests
+        def mock_deposit_history(options):
+            return []  # Empty history is fine for this test
+
+        monkeypatch.setattr(bitvavo_client._client, "depositHistory", mock_deposit_history)
+
+        # Call a decorated method - should trigger wait and retry
+        result = bitvavo_client.get_total_deposited()
+
+        # Verify behavior
+        assert call_count["get_remaining"] == 2  # Called twice: before and after sleep
+        assert call_count["sleep"] == 1  # Slept once for 60 seconds
+        assert result == 0.0  # Empty deposit history returns 0
 
     def test_get_total_deposited(self, bitvavo_client: BitvavoClient):
         """Test getting total deposited amount."""
