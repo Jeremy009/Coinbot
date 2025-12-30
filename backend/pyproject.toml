@@ -4,12 +4,9 @@ version = "0.1.0"
 description = "Coinbot cryptocurrency trading backend"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.109.0",
-    "uvicorn[standard]>=0.27.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.1.0",
     "python-dotenv>=1.0.0",
-    "httpx>=0.26.0",
     "python-bitvavo-api>=1.2.2",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
@@ -21,7 +18,6 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
-    "pytest-asyncio>=0.23.0",
     "ruff>=0.2.0",
     "mypy>=1.8.0",
 ]
@@ -62,7 +58,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-asyncio_mode = "auto"
 addopts = [
     "--strict-markers",
     "--cov=coinbot_backend",

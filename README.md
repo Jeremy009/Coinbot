@@ -1,21 +1,20 @@
 # Coinbot
 
-Stateless, automated cryptocurrency trading platform.
+Stateless, automated cryptocurrency trading bot using MACD indicators.
 
 ## Tech Stack
 
-- **Backend**: Python 3.12, FastAPI, uv package manager
-- **Infrastructure**: Docker, Docker Compose
+- **Backend**: Python 3.12, uv package manager
+- **Exchange**: Bitvavo API
+- **Indicators**: MACD, RSI, MFI
 
 ## Prerequisites
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
-- Docker and Docker Compose (optional, for containerized deployment)
+- Bitvavo API credentials
 
 ## Quick Start
-
-### Local Development
 
 1. **Install uv** (if not already installed):
 ```bash
@@ -29,28 +28,13 @@ make install
 
 3. **Set up environment variables**:
 ```bash
-cp .env.example .env
-# Edit .env with your actual credentials
+cp .env.example backend/.env
+# Edit backend/.env with your Bitvavo API credentials
 ```
 
-4. **Run the backend**:
+4. **Run tests**:
 ```bash
-make run
-```
-
-The API will be available at `http://localhost:8000`
-
-### Docker Deployment
-
-1. **Set up environment variables**:
-```bash
-cp .env.example .env
-# Edit .env with your actual credentials
-```
-
-2. **Build and run with Docker Compose**:
-```bash
-make run-docker
+make test
 ```
 
 ## Available Commands
@@ -60,25 +44,25 @@ Run `make help` to see all available commands:
 ```bash
 make install      # Install all dependencies
 make test         # Run all tests
-make run          # Run backend locally
 make lint         # Run linting (ruff)
 make format       # Format code (ruff)
 make type-check   # Run type checking (mypy)
-make build-docker # Build Docker images
-make run-docker   # Run with docker-compose
+make clean        # Remove generated files
 ```
 
 ## Project Structure
 
 ```
 coinbot/
-├── backend/              # Python backend service
-│   ├── src/
-│   │   └── coinbot_backend/
+├── backend/
+│   ├── src/coinbot_backend/
+│   │   ├── core/           # Constants, exceptions
+│   │   ├── models/         # Data models (Candles, etc.)
+│   │   └── services/       # Trading logic, indicators, Bitvavo client
 │   ├── tests/
-│   ├── pyproject.toml
-│   └── Dockerfile
-├── docker-compose.yml
+│   │   ├── unit/           # Unit tests
+│   │   └── integration/    # Integration tests with Bitvavo API
+│   └── pyproject.toml
 ├── Makefile
 └── README.md
 ```

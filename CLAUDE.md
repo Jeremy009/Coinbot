@@ -4,16 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Coinbot is a modern, stateless cryptocurrency trading platform built with:
-- **Backend**: Python 3.12, FastAPI, uv package manager
+Coinbot is a stateless cryptocurrency trading bot built with:
+- **Backend**: Python 3.12, uv package manager
 - **Exchange**: Bitvavo API integration
-- **Infrastructure**: Docker, Docker Compose
+- **Strategy**: MACD-based trading signals
 
 ## Tech Stack & Tools
 
 - **Python 3.12**: Current stable release with modern features
 - **uv**: Fast, modern package manager (10-100x faster than pip)
-- **FastAPI**: High-performance async web framework
 - **Pydantic**: Data validation and settings management
 - **Ruff**: Fast Python linter and formatter
 - **mypy**: Static type checking
@@ -25,18 +24,15 @@ Coinbot is a modern, stateless cryptocurrency trading platform built with:
 coinbot/
 ├── backend/
 │   ├── src/coinbot_backend/      # Main package (underscore naming)
-│   │   ├── api/                  # FastAPI route handlers
 │   │   ├── core/                 # Core utilities, constants, exceptions
-│   │   ├── models/               # Pydantic models
-│   │   └── services/             # Business logic (Bitvavo client)
+│   │   ├── models/               # Data models (Candles, etc.)
+│   │   └── services/             # Trading logic, indicators, Bitvavo client
 │   ├── tests/                    # Tests (sibling to src/, not inside)
 │   │   ├── unit/                 # Unit tests
-│   │   └── integration/          # Integration tests
-│   ├── pyproject.toml            # Dependencies and tool config
-│   └── Dockerfile                # Multi-stage Docker build
-├── .env                          # Environment variables (gitignored)
+│   │   └── integration/          # Integration tests with Bitvavo API
+│   └── pyproject.toml            # Dependencies and tool config
+├── backend/.env                  # Environment variables (gitignored)
 ├── .env.example                  # Template (committed)
-├── docker-compose.yml            # Service orchestration
 ├── Makefile                      # Developer convenience commands
 └── README.md
 ```
@@ -47,13 +43,11 @@ All commands are available via the root-level `Makefile`:
 
 ```bash
 make install      # Install dependencies with uv
-make run          # Run backend locally (http://localhost:8000)
 make test         # Run all tests with pytest
 make lint         # Check code with ruff
 make format       # Auto-format code with ruff
 make type-check   # Run mypy type checking
-make build-docker # Build Docker images
-make run-docker   # Run with docker-compose
+make clean        # Remove generated files
 ```
 
 ## Key Design Patterns
@@ -75,12 +69,6 @@ make run-docker   # Run with docker-compose
 - BitvavoClient accessed via `get_bitvavo_client()` function
 - Single instance shared across application
 - Initialized lazily on first access
-
-### FastAPI Structure
-- Routes organized by domain in `api/` directory
-- `/health` and `/ready` endpoints for health checks
-- `/api/v1/*` prefix for versioned trading endpoints
-- Automatic OpenAPI docs at `/docs`
 
 ## Trading Bot Architecture
 
@@ -140,19 +128,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 make install
 ```
 
-### Local Development
+### Running the Bot
 
+The MACD bot can be run directly:
 ```bash
-make run
+cd backend && uv run python -m coinbot_backend.services.macd_bot
 ```
 
-Backend runs at `http://localhost:8000` with auto-reload enabled.
-
-### Docker Deployment
-
-```bash
-make run-docker
-```
+Ensure `BOT_ENABLED=true` in your `.env` file.
 
 ### Testing
 
@@ -227,17 +210,7 @@ cd backend && uv run pytest -k "candles"             # Tests matching pattern
 - **Tests location**: Tests are siblings to `src/`, not inside the package
 - **Package naming**: Import as `coinbot_backend` (underscore), project name is `coinbot-backend` (hyphen)
 - **Type hints**: Full type annotations required (enforced by mypy strict mode)
-- **Python path**: Set via `PYTHONPATH=/app/src` in Docker, automatic when using `uv run`
 - **.env location**: Must be in `backend/` directory, NOT project root (common mistake)
-
-## API Endpoints
-
-- `GET /` - Root endpoint with API info
-- `GET /health` - Health check
-- `GET /ready` - Readiness check
-- `GET /api/v1/balance` - Account balance information
-- `GET /api/v1/symbols` - List available trading symbols
-- `GET /api/v1/symbols/{symbol}` - Get specific symbol info
 
 ## Exception Handling
 
@@ -255,11 +228,10 @@ All custom exceptions inherit from `CoinbotException` base class:
 
 ## Adding New Features
 
-1. **New API endpoint**: Add route in `backend/src/coinbot_backend/api/`
-2. **New data model**: Add in `backend/src/coinbot_backend/models/`
-3. **New service**: Add in `backend/src/coinbot_backend/services/`
-4. **New exception**: Add in `backend/src/coinbot_backend/core/exceptions.py`
-5. **Always write tests**: Add corresponding tests in `backend/tests/`
+1. **New data model**: Add in `backend/src/coinbot_backend/models/`
+2. **New service**: Add in `backend/src/coinbot_backend/services/`
+3. **New exception**: Add in `backend/src/coinbot_backend/core/exceptions.py`
+4. **Always write tests**: Add corresponding tests in `backend/tests/`
 
 **Example: Adding a new Bitvavo API method**
 ```python

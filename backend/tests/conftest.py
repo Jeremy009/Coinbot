@@ -1,15 +1,6 @@
 """Pytest configuration and fixtures."""
 
 import pytest
-from fastapi.testclient import TestClient
-
-from coinbot_backend.main import app
-
-
-@pytest.fixture
-def client() -> TestClient:
-    """FastAPI test client fixture."""
-    return TestClient(app)
 
 
 @pytest.fixture
