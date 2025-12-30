@@ -1,6 +1,19 @@
 """Trading-related data models."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
+
+
+class OpenPosition(BaseModel):
+    """Represents an open trading position."""
+
+    symbol: str = Field(..., description="Trading symbol (e.g., 'BTC', 'ETH')")
+    buy_datetime: datetime = Field(..., description="When the position was opened")
+    amount: float = Field(..., description="Amount of coins purchased")
+    buy_price: float = Field(..., description="Price per coin at purchase (EUR)")
+    total_cost: float = Field(..., description="Total cost including fees (EUR)")
+    reason_for_buying: str = Field(..., description="Strategy or reason for opening position")
 
 
 class BalanceResponse(BaseModel):

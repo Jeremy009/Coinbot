@@ -10,7 +10,9 @@
       "Bash(make test:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.bitvavo.com)"
     ],
     "deny": [],
     "ask": []
