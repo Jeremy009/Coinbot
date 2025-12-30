@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(/Users/jeremy/Projects/Coinbot/backend)",
+      "Bash(cat:*)",
+      "Bash(git checkout:*)",
+      "Bash(make test:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
