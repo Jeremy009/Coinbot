@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Code Style Guidelines
+
+**IMPORTANT: DO NOT USE EMOJIS**
+- Never use emojis in code, comments, log messages, or documentation
+- Use plain text for all output and logging
+- Keep all messages professional and text-based
+
 ## Project Overview
 
 Coinbot is a stateless cryptocurrency trading bot built with:
@@ -26,7 +33,7 @@ coinbot/
 │   ├── src/coinbot_backend/      # Main package (underscore naming)
 │   │   ├── core/                 # Core utilities, constants, exceptions
 │   │   ├── models/               # Data models (Candles, etc.)
-│   │   └── services/             # Trading logic, indicators, Bitvavo client
+│   │   └── services/             # Trading logic, indicators, Bitvavo client, S3 storage
 │   ├── tests/                    # Tests (sibling to src/, not inside)
 │   │   ├── unit/                 # Unit tests
 │   │   └── integration/          # Integration tests with Bitvavo API
@@ -59,6 +66,39 @@ make clean        # Remove generated files
 - Settings loaded from `.env` file automatically
 - Access via `from coinbot_backend.config import settings`
 
+### S3 Storage
+- All bot data (positions, trades, logs) is stored in AWS S3, not on the filesystem
+- Uses `services/s3_storage.py` for S3 operations
+- **Authentication methods** (in order of preference):
+  1. **AWS Credential Chain** (recommended): AWS CLI, IAM role, environment variables
+  2. **Explicit credentials**: Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`
+- **Required settings** in `.env`:
+  - `AWS_REGION` - AWS region (e.g., `eu-central-1`)
+  - `S3_BUCKET_NAME` - S3 bucket name for storing data
+- **Data locations**:
+  - Positions: `s3://{bucket}/positions.json`
+  - Trade logs: `s3://{bucket}/trades.log.json`
+  - Application logs: `s3://{bucket}/logs/bot_YYYYMMDD_HHMMSS.log`
+- **Logging destinations** (simultaneous):
+  1. **Console** (stdout/stderr) - real-time monitoring, CloudWatch integration
+  2. **S3** (logs/bot_TIMESTAMP.log) - persistent storage and analysis
+
+**S3 operations are logged:**
+- Upload operations: "Uploading to S3: s3://bucket/key"
+- Download operations: "Downloading from S3: s3://bucket/key"
+- Success messages: "Successfully uploaded/downloaded"
+- Error messages: "Failed to upload/download"
+
+**Testing S3 connection:**
+```bash
+cd backend && uv run python test_s3_connection.py
+```
+
+**Testing S3 logging:**
+```bash
+cd backend && uv run python test_s3_logging.py
+```
+
 ### API Rate Limiting
 - All Bitvavo API calls use `@limit_api_calls` decorator
 - Prevents blacklisting by checking remaining calls (max 1000/min)
@@ -70,40 +110,101 @@ make clean        # Remove generated files
 - Single instance shared across application
 - Initialized lazily on first access
 
+### Dry-Run Mode (Paper Trading)
+- **HIGHLY RECOMMENDED** for testing before using real money
+- Enable with `BOT_DRY_RUN=true` in `.env` (enabled by default)
+- Simulates all buy/sell orders without hitting the exchange
+- Uses real market data (prices, candles, symbols) but fake balances
+- Tracks simulated EUR and crypto balances internally
+- Simulates Bitvavo taker fees (default 0.25% for market orders, configurable)
+- All logs clearly marked with "DRY-RUN" prefix to indicate dry-run operations
+- Position tracking and trade logging work identically to live mode
+- Set initial balance with `BOT_DRY_RUN_INITIAL_BALANCE` (default: €1000)
+- Configure fee rate with `BOT_DRY_RUN_FEE_RATE` (default: 0.0025 = 0.25%)
+
+**Bitvavo Fee Structure:**
+- **Taker fee: 0.25%** (standard tier, market orders always use taker fee)
+- **Maker fee: 0.15%** (limit orders that add liquidity - not currently used)
+- Volume-based tiers: Fees decrease with 30-day volume (down to 0.03% maker / 0.04% taker)
+- The bot uses market orders → always pays taker fee
+
+**Testing the bot:**
+1. Set `BOT_DRY_RUN=true` in `backend/.env`
+2. Run: `cd backend && uv run python -m coinbot_backend.main`
+3. Watch logs to see simulated trades
+4. Check `positions.json` and `trades.log.json` for results
+5. Test script: `cd backend && uv run python test_dry_run.py`
+
+**Going live (USE EXTREME CAUTION):**
+1. Thoroughly test in dry-run mode for at least 1-2 weeks
+2. Verify strategies are working as expected
+3. Set `BOT_DRY_RUN=false` in `backend/.env`
+4. Start with small allocation (reduce `BOT_MAX_ALLOCATION_PERCENT`)
+5. Monitor closely for first few days
+
 ## Trading Bot Architecture
 
-### MACD Trading Strategy
-The bot (`services/macd_bot.py`) implements a **stateless MACD-based trading strategy**:
+### Multi-Strategy Trading Bot (`main.py`)
+The bot (`main.py`) implements a **two-tier trading strategy with position tracking**:
 
-1. **Symbol Analysis** (`get_promising_symbols`):
-   - Scans all exchange symbols for opportunities
-   - Filters by: 24h positive growth, minimum volume threshold, BUY signal from MACD
-   - Returns ranked list by MACD strength
+**Key Features:**
+- Persistent position tracking stored in S3 (`positions.json`)
+- Complete trade logging with P/L calculations stored in S3 (`trades.log.json`)
+- Single iteration execution (designed for scheduled/cron jobs)
+- Two-tier strategy: Fast MACD check → Advanced multi-strategy confluence
+- Risk management: Only uses configured % of available funds (default: 5%)
+
+**Trading Flow:**
+
+1. **Finding Opportunities** (`find_opportunities`):
+   - Scans all exchange symbols
+   - Filters: 24h positive growth, minimum volume threshold, MACD BUY signal
+   - Returns top N opportunities ranked by volume
 
 2. **Position Management**:
-   - `analyse_existing_positions`: Checks owned symbols, sells if MACD signals SELL
-   - `open_new_positions`: Opens new positions up to configured limit
+   - **Tier 1 (Fast MACD)**: Quick momentum check for existing positions
+     - SELL signal → Immediately sell
+     - BUY signal → Keep holding
+     - HOLD signal → Go to Tier 2
+   - **Tier 2 (Multi-strategy confluence)**: Advanced analysis if MACD is unclear
+     - Uses 3 strategies: RSI+MACD, EMA crossover, Bollinger mean reversion
+     - SELL/STRONG_SELL with >65% confidence → Sell
+     - Otherwise → Keep holding
 
 3. **Configuration** (via `.env`):
    - `BOT_ENABLED`: Enable/disable bot execution
+   - `BOT_DRY_RUN`: Enable paper trading mode (default: true, **RECOMMENDED**)
+   - `BOT_DRY_RUN_INITIAL_BALANCE`: Starting EUR for simulated trading (default: €1000)
    - `BOT_UPDATE_INTERVAL`: Minutes between bot runs
    - `BOT_NUM_POSITIONS`: Maximum concurrent positions
+   - `BOT_MAX_ALLOCATION_PERCENT`: Percentage of available funds to use for trading (default: 5.0%)
    - `BOT_VOLUME_LIMIT`: Minimum 24h volume threshold (EUR)
    - `BOT_MACD_*`: MACD parameters (time resolution, periods)
 
-### Technical Indicators (`services/indicators.py`)
-- **MACD**: Moving Average Convergence Divergence (default: 12/39/9 periods)
-- **RSI**: Relative Strength Index (default: 14 periods)
-- **MFI**: Money Flow Index (default: 14 periods)
-- All return pandas DataFrames with indicator columns added
+### Trading Strategies (`services/trading_strategies.py`)
+**Unified module consolidating indicators, signals, and strategies**
 
-### Trading Signals (`services/signals.py`)
-- `TradebotAction` enum: BUY, HOLD, SELL
-- `macd_signal()`: Analyzes MACD histogram momentum
-  - BUY: Positive momentum and building (3+ increasing bars)
-  - SELL: Negative momentum OR positive but decreasing (4+ decreasing bars)
-  - HOLD: Positive momentum but not building
-- `rsi_signal()`: RSI-based signals (oversold < 30, overbought > 70)
+**Key Types:**
+- `Signal` enum: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL
+- `TradeSignal` dataclass: Contains signal, confidence, reason, stop_loss, take_profit, indicators
+
+**Indicator Calculators (private helpers):**
+- `calculate_macd()`: Moving Average Convergence Divergence
+- `calculate_rsi()`: Relative Strength Index
+- `calculate_mfi()`: Money Flow Index
+- `calculate_ema()`, `calculate_sma()`: Moving averages
+- `calculate_bollinger_bands()`: Volatility bands
+- `calculate_atr()`: Average True Range
+
+**Strategy Functions (uniform interface):**
+All strategies have signature: `strategy_<name>(candles: OHLCVCandles | pd.DataFrame, **params) -> TradeSignal`
+- `strategy_macd_simple()`: Fast MACD momentum signals
+- `strategy_rsi_simple()`: Overbought/oversold detection
+- `strategy_rsi_macd()`: Combined RSI + MACD (73% win rate)
+- `strategy_ema_crossover()`: Golden/Death cross signals
+- `strategy_bollinger_mean_reversion()`: Mean reversion trades
+- `strategy_bollinger_squeeze_breakout()`: Volatility breakout detection
+- `strategy_multi_confluence()`: Multi-indicator confluence (highest confidence)
 
 ### OHLCV Candles Model (`models/candles.py`)
 - Stores financial time series: Open, High, Low, Close, Volume
@@ -130,12 +231,27 @@ make install
 
 ### Running the Bot
 
-The MACD bot can be run directly:
+The trading bot can be run directly:
 ```bash
-cd backend && uv run python -m coinbot_backend.services.macd_bot
+cd backend && uv run python -m coinbot_backend.main
 ```
 
-Ensure `BOT_ENABLED=true` in your `.env` file.
+Ensure `BOT_ENABLED=true` in your `.env` file and AWS credentials are configured.
+
+The bot will:
+- Load existing positions from S3 (`positions.json`)
+- Evaluate all positions using two-tier strategy
+- Look for new opportunities (up to `BOT_NUM_POSITIONS`)
+- Only use `BOT_MAX_ALLOCATION_PERCENT` of available funds
+- Save positions and log all trades to S3
+- **Run once and exit** (designed for scheduled execution via cron/Lambda/ECS Scheduled Tasks)
+
+**Scheduling the bot:**
+The bot now runs a single iteration and exits. You should schedule it using:
+- **AWS Lambda** with EventBridge (e.g., every 2 hours)
+- **AWS ECS Scheduled Tasks** (e.g., every 2 hours)
+- **Cron job** on a server (e.g., `0 */2 * * *` for every 2 hours)
+- **Kubernetes CronJob**
 
 ### Testing
 
@@ -160,17 +276,21 @@ cd backend && uv run pytest -k "candles"             # Tests matching pattern
 - Make **real API calls** to Bitvavo
 - Requires valid `.env` with API credentials in `backend/` directory
 - Slower execution (seconds to minutes)
-- **IMPORTANT**: Mock `get_remaining_limit()` when testing the rate limiter decorator
+- **IMPORTANT**: Mock `get_remaining_limit()` and `time.sleep()` when testing the rate limiter
   ```python
   def test_limit_api_calls_decorator(self, bitvavo_client, monkeypatch):
-      monkeypatch.setattr(bitvavo_client, "get_remaining_limit", lambda: 50)
-      with pytest.raises(CoinbotRateLimitError):
-          bitvavo_client.get_total_deposited()
+      # Mock to simulate low remaining calls, then high after reset
+      call_count = {"count": 0}
+      monkeypatch.setattr(
+          bitvavo_client, "get_remaining_limit",
+          lambda: 50 if call_count["count"] == 0 else 950
+      )
+      monkeypatch.setattr(time, "sleep", lambda s: None)  # Skip actual wait
+      bitvavo_client.get_total_deposited()  # Should wait, then proceed
   ```
-  This avoids exhausting the API quota (1000 calls/min) during test runs.
+  This tests the wait/retry logic without exhausting API quota or waiting 60s.
 
 **Test Fixtures** (`tests/conftest.py`):
-- `client`: FastAPI TestClient for API endpoint testing
 - `mock_bitvavo_client`: Mocked Bitvavo client to avoid real API calls
 - Module-scoped fixtures share instances across test class
 
@@ -180,7 +300,7 @@ cd backend && uv run pytest -k "candles"             # Tests matching pattern
 - **1000 calls per minute** maximum
 - `get_remaining_limit()` returns current remaining calls
 - All API methods decorated with `@limit_api_calls`
-- Raises `CoinbotRateLimitError` when < 100 calls remaining
+- Automatically waits 60 seconds for rate limit reset when < 100 calls remaining
 
 ### Candle Data Retrieval
 - **Maximum 1440 candles per request** (Bitvavo API limit)

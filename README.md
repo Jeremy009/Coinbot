@@ -30,12 +30,21 @@ make install
 ```bash
 cp .env.example backend/.env
 # Edit backend/.env with your Bitvavo API credentials
+# Set BOT_ENABLED=true to enable trading
 ```
 
 4. **Run tests**:
 ```bash
 make test
 ```
+
+5. **Run the trading bot**:
+```bash
+cd backend
+uv run python -m coinbot_backend.main
+```
+
+See [backend/RUN_BOT.md](backend/RUN_BOT.md) for detailed bot documentation.
 
 ## Available Commands
 

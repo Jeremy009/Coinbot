@@ -1,25 +1,73 @@
 """Main trading bot application with position tracking and multi-strategy support."""
 
-import json
 import logging
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from coinbot_backend.config import settings
-from coinbot_backend.models.trading import OpenPosition
-from coinbot_backend.services.bitvavo_client import get_bitvavo_client
-from coinbot_backend.services.indicators import macd_indicator
-from coinbot_backend.services.signals import TradebotAction, macd_signal
-from coinbot_backend.services.strategies import Signal, get_all_signals
+from tqdm import tqdm
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+from coinbot_backend.config import settings
+from coinbot_backend.models.trading import OpenPosition, Signal
+from coinbot_backend.services.bitvavo_client import get_bitvavo_client
+from coinbot_backend.services.s3_storage import S3LogHandler, get_s3_storage
+from coinbot_backend.services.trading_strategies import strategy_multi_confluence
+
+
+# Custom formatter to show only module name (not full path)
+class ShortNameFormatter(logging.Formatter):
+    """Formatter that shows only the module name instead of full path."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        # Extract just the module name from the full path
+        # e.g., "coinbot_backend.services.bitvavo_client" -> "bitvavo_client"
+        if "." in record.name:
+            record.name = record.name.split(".")[-1]
+        return super().format(record)
+
+
+# Configure logging to console, file, and S3
+def setup_logging() -> logging.Logger:
+    """Configure logging to output to console, rotating file, and S3."""
+    log_format = "%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s"
+    log_level = getattr(logging, settings.log_level.upper())
+
+    # Create logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(log_level)
+
+    # Prevent duplicate handlers if this is called multiple times
+    if logger.handlers:
+        return logger
+
+    # Console handler (stdout/stderr)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(ShortNameFormatter(log_format))
+    logger.addHandler(console_handler)
+
+    # S3 handler (upload logs to S3)
+    if settings.s3_enable_log_upload:
+        # Generate unique log filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_key = f"{settings.s3_log_key_prefix}bot_{timestamp}.log"
+
+        s3_storage = get_s3_storage()
+        s3_handler = S3LogHandler(
+            s3_storage=s3_storage,
+            log_key=log_key,
+            max_buffer_size=settings.s3_log_buffer_size,
+        )
+        s3_handler.setLevel(log_level)
+        s3_handler.setFormatter(ShortNameFormatter(log_format))
+        logger.addHandler(s3_handler)
+
+        logger.info(f"S3 logging enabled: s3://{settings.s3_bucket_name}/{log_key}")
+
+    return logger
+
+
+logger = setup_logging()
 
 
 class TradingBot:
@@ -30,68 +78,37 @@ class TradingBot:
     and logs all trades to a JSON file for analysis.
     """
 
-    def __init__(self, positions_file: str = "positions.json", trades_log_file: str = "trades.log.json"):
+    def __init__(self) -> None:
         """Initialize the trading bot."""
         self.client = get_bitvavo_client()
-        self.positions_file = Path(positions_file)
-        self.trades_log_file = Path(trades_log_file)
+        self.s3_storage = get_s3_storage()
         self.positions: dict[str, OpenPosition] = {}
+        self.iteration_number = 0
 
-        # Load existing positions if file exists
-        if self.positions_file.exists():
-            self._load_positions()
+        # Load existing positions from S3 if exists (silently, will log after banner)
+        self._load_positions(silent=True)
 
-    def _load_positions(self) -> None:
-        """Load positions from JSON file."""
-        try:
-            with open(self.positions_file) as f:
-                data = json.load(f)
-                self.positions = {
-                    symbol: OpenPosition(**pos_data)
-                    for symbol, pos_data in data.items()
-                }
-            logger.info(f"Loaded {len(self.positions)} existing positions from {self.positions_file}")
-        except Exception as e:
-            logger.error(f"Failed to load positions: {e}")
-            self.positions = {}
+    # Running
+    def run(self) -> None:
+        """Run one iteration of the trading bot."""
+        logger.info("=" * 80)
+        logger.info(f"Bot iteration {self.iteration_number} started at {datetime.now()}")
 
-    def _save_positions(self) -> None:
-        """Save positions to JSON file."""
-        try:
-            data = {
-                symbol: pos.model_dump(mode="json")
-                for symbol, pos in self.positions.items()
-            }
-            with open(self.positions_file, "w") as f:
-                json.dump(data, f, indent=2, default=str)
-            logger.debug(f"Saved {len(self.positions)} positions to {self.positions_file}")
-        except Exception as e:
-            logger.error(f"Failed to save positions: {e}")
+        # Get current state
+        balance = self.get_account_balance()
+        logger.info(f"Available funds: {balance['available_funds']:.2f} EUR")
 
-    def _log_trade(self, action: str, symbol: str, details: dict[str, Any]) -> None:
-        """Log a trade to the trades log file."""
-        trade_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "action": action,
-            "symbol": symbol,
-            **details
-        }
+        # Update positions
+        self.get_current_positions()
 
-        try:
-            # Append to log file
-            logs = []
-            if self.trades_log_file.exists():
-                with open(self.trades_log_file) as f:
-                    logs = json.load(f)
+        # Evaluate existing positions (may sell some)
+        self.evaluate_existing_positions()
 
-            logs.append(trade_entry)
+        # Look for new opportunities
+        self.open_new_positions(settings.bot_num_positions)
 
-            with open(self.trades_log_file, "w") as f:
-                json.dump(logs, f, indent=2, default=str)
-
-            logger.info(f"Logged {action} trade for {symbol}")
-        except Exception as e:
-            logger.error(f"Failed to log trade: {e}")
+        logger.info(f"Iteration complete. Open positions: {len(self.positions)}")
+        self.iteration_number += 1
 
     def get_account_balance(self) -> dict[str, float]:
         """Get current account balance information."""
@@ -102,6 +119,7 @@ class TradingBot:
             "total_gains": self.client.get_total_gains(),
         }
 
+    # Selling
     def get_current_positions(self) -> dict[str, OpenPosition]:
         """
         Get current open positions by checking owned symbols.
@@ -127,38 +145,13 @@ class TradingBot:
                     buy_datetime=datetime.now(),
                     amount=amount,
                     buy_price=price,
+                    ath=price,  # Initialize ATH to current price for untracked positions
                     total_cost=amount * price,
                     reason_for_buying="Pre-existing or manual trade (not tracked)"
                 )
 
         self._save_positions()
         return self.positions
-
-    def analyze_position_with_macd(self, symbol: str) -> TradebotAction:
-        """Analyze a position using MACD indicator."""
-        try:
-            candles = self.client.get_candles(
-                symbol,
-                settings.bot_macd_timeresolution,
-                "1m"
-            )
-
-            if len(candles.timestamps) < 90:
-                logger.warning(f"Insufficient candle data for {symbol}")
-                return TradebotAction.HOLD
-
-            macd_df = macd_indicator(
-                candles,
-                settings.bot_macd_short_period,
-                settings.bot_macd_long_period,
-                settings.bot_macd_signal_period
-            )
-
-            return macd_signal(macd_df)
-
-        except Exception as e:
-            logger.error(f"Failed to analyze {symbol} with MACD: {e}")
-            return TradebotAction.HOLD
 
     def analyze_position_with_strategies(self, symbol: str) -> tuple[Signal, float, str]:
         """
@@ -168,14 +161,17 @@ class TradingBot:
             Tuple of (signal, confidence, reason)
         """
         try:
-            candles = self.client.get_candles(symbol, "1h", "1w")
+            candles = self.client.get_candles(
+                symbol,
+                settings.bot_analysis_time_resolution,
+                settings.bot_analysis_time_span
+            )
 
-            if len(candles.timestamps) < 200:
+            if len(candles.timestamps) < settings.bot_min_candles_required:
                 logger.warning(f"Insufficient data for advanced strategies on {symbol}")
                 return Signal.HOLD, 0.5, "Insufficient historical data"
 
-            signals = get_all_signals(candles)
-            confluence = signals["confluence"]
+            confluence = strategy_multi_confluence(candles)
 
             return confluence.signal, confluence.confidence, confluence.reason
 
@@ -190,25 +186,42 @@ class TradingBot:
         for symbol, position in list(self.positions.items()):
             logger.info(f"Analyzing {symbol} (held since {position.buy_datetime})")
 
-            # Use MACD for quick decision
-            macd_action = self.analyze_position_with_macd(symbol)
+            # Get current price
+            current_price = self.client.get_symbol_price(symbol)
 
-            if macd_action == TradebotAction.SELL:
-                logger.info(f"MACD signals SELL for {symbol}")
-                self.sell_position(symbol, "MACD sell signal")
+            # Update ATH
+            new_ath = max(position.ath, current_price)
 
-            elif macd_action == TradebotAction.BUY:
-                logger.info(f"{symbol} shows MACD BUY signal - HOLDING")
+            # Check trailing stop-loss (safety mechanism - highest priority)
+            stop_loss_threshold = new_ath * (1 - settings.bot_trailing_stop_loss_pct / 100)
+            if current_price < stop_loss_threshold:
+                drop_from_ath_pct = ((new_ath - current_price) / new_ath) * 100
+                logger.warning(
+                    f"TRAILING STOP-LOSS triggered for {symbol}: "
+                    f"price {current_price:.2f} dropped {drop_from_ath_pct:.1f}% from ATH {new_ath:.2f}"
+                )
+                self.sell_position(
+                    symbol,
+                    f"Trailing stop-loss: {drop_from_ath_pct:.1f}% drop from ATH {new_ath:.2f}"
+                )
+                continue
 
-            else:  # HOLD
-                # Use advanced strategies for additional confirmation
-                signal, confidence, reason = self.analyze_position_with_strategies(symbol)
+            # Multi-strategy confluence analysis
+            signal, confidence, reason = self.analyze_position_with_strategies(symbol)
 
-                if signal in [Signal.SELL, Signal.STRONG_SELL] and confidence > 0.65:
-                    logger.info(f"Advanced strategies signal SELL for {symbol}: {reason}")
-                    self.sell_position(symbol, f"Strategy sell: {reason}")
-                else:
-                    logger.info(f"{symbol} HOLDING - {reason}")
+            # Sell if strategies indicate exit with sufficient confidence
+            if signal in [Signal.SELL, Signal.STRONG_SELL] and confidence >= settings.bot_exit_min_confidence:
+                logger.info(f"Strategy SELL signal for {symbol}: {reason} (confidence: {confidence:.0%})")
+                self.sell_position(symbol, f"{reason} (conf: {confidence:.0%})")
+                continue
+
+            # Update ATH if new high reached
+            if new_ath > position.ath:
+                position.ath = new_ath
+                self._save_positions()
+                logger.info(f"{symbol} HOLDING - {reason} (ATH updated to {new_ath:.2f}, conf: {confidence:.0%})")
+            else:
+                logger.info(f"{symbol} HOLDING - {reason} (conf: {confidence:.0%})")
 
     def sell_position(self, symbol: str, reason: str) -> bool:
         """Sell a position and log the trade."""
@@ -219,7 +232,6 @@ class TradingBot:
 
             position = self.positions[symbol]
             amount = self.client.get_symbol_owned_amount(symbol)
-            current_price = self.client.get_symbol_price(symbol)
 
             # Execute sell order
             response = self.client.sell(symbol, amount)
@@ -228,28 +240,31 @@ class TradingBot:
                 logger.error(f"Failed to sell {symbol}: {response['error']}")
                 return False
 
-            # Calculate profit/loss
+            # Calculate actual execution price and profit/loss
+            filled_amount = float(response['filledAmount'])
             sell_value = float(response['filledAmountQuote'])
-            profit_loss = sell_value - position.total_cost
+            sell_fee = float(response['feePaid'])
+            actual_sell_price = sell_value / filled_amount if filled_amount > 0 else 0
+            profit_loss = sell_value - sell_fee - position.total_cost
             profit_loss_pct = (profit_loss / position.total_cost) * 100
 
             logger.info(
-                f"SOLD {symbol}: {response['filledAmount']} @ {current_price:.2f} EUR/coin "
+                f"SOLD {symbol}: {filled_amount} @ {actual_sell_price:.2f} EUR/coin "
                 f"(P/L: {profit_loss:+.2f} EUR / {profit_loss_pct:+.2f}%)"
             )
 
             # Log the trade
             self._log_trade("SELL", symbol, {
                 "reason": reason,
-                "amount": float(response['filledAmount']),
-                "sell_price": current_price,
+                "amount": filled_amount,
+                "sell_price": actual_sell_price,
                 "sell_value": sell_value,
                 "buy_price": position.buy_price,
                 "buy_cost": position.total_cost,
                 "profit_loss": profit_loss,
                 "profit_loss_pct": profit_loss_pct,
                 "hold_duration_hours": (datetime.now() - position.buy_datetime).total_seconds() / 3600,
-                "fee": float(response['feePaid']),
+                "sell_fee": sell_fee,
             })
 
             # Remove from positions
@@ -262,9 +277,10 @@ class TradingBot:
             logger.error(f"Error selling {symbol}: {e}")
             return False
 
+    # Buying
     def find_opportunities(self, max_positions: int) -> list[tuple[str, str]]:
         """
-        Find trading opportunities using MACD analysis.
+        Find trading opportunities using multi-strategy confluence analysis.
 
         Returns:
             List of (symbol, reason) tuples
@@ -278,101 +294,103 @@ class TradingBot:
 
         logger.info(f"Looking for {positions_to_open} new opportunities...")
 
-        opportunities: list[tuple[str, str, float]] = []
+        # Step 1: Pre-filter symbols by growth and volume
+        logger.info("Filtering symbols by 24h growth > 0% and volume >= €{:,.0f}...".format(
+            settings.bot_volume_limit
+        ))
 
-        for symbol in self.client.get_available_symbols():
-            # Skip if already owned
-            if symbol in self.positions:
-                continue
+        candidates: list[tuple[str, float, float]] = []  # (symbol, growth_24h, volume_24h)
+        available_symbols = self.client.get_available_symbols()
 
-            # Skip EUR
-            if symbol == "EUR":
+        for symbol in tqdm(
+            available_symbols,
+            desc="Pre-filtering symbols",
+            unit="symbol",
+            leave=False
+        ):
+            # Skip if already owned or is EUR
+            if symbol in self.positions or symbol == "EUR":
                 continue
 
             try:
-                # Check 24h growth
+                # Pre-filter: Check 24h growth (must be positive)
                 growth_24h = self.client.get_symbol_24h_percentual_change(symbol)
                 if growth_24h <= 0:
                     continue
 
-                # Check volume
+                # Pre-filter: Check volume (must meet minimum threshold)
                 volume_24h = self.client.get_symbol_24h_volume(symbol)
                 if volume_24h < settings.bot_volume_limit:
                     continue
 
-                # Check MACD
-                macd_action = self.analyze_position_with_macd(symbol)
-                if macd_action != TradebotAction.BUY:
-                    continue
-
-                reason = f"MACD BUY signal, 24h growth: {growth_24h:.2f}%, volume: {volume_24h:,.0f} EUR"
-                opportunities.append((symbol, reason, volume_24h))
-
-                logger.debug(f"Opportunity: {symbol} - {reason}")
+                candidates.append((symbol, growth_24h, volume_24h))
 
             except Exception as e:
                 logger.debug(f"Skipping {symbol}: {e}")
 
-        # Sort by volume and return top opportunities
-        opportunities.sort(key=lambda x: x[2], reverse=True)
-        return [(sym, reason) for sym, reason, _ in opportunities[:positions_to_open]]
+        logger.info(f"Pre-filtered to {len(candidates)} candidate(s) with positive growth and sufficient volume")
+        logger.info(f"  Candidates: {[symbol for symbol, _, _ in candidates]}")
 
-    def buy_symbol(self, symbol: str, amount_eur: float, reason: str) -> bool:
-        """Buy a symbol and track the position."""
-        try:
-            # Execute buy order
-            response = self.client.buy(symbol, amount_eur)
+        if not candidates:
+            logger.info("No symbols passed pre-filtering criteria")
+            return []
 
-            if "error" in response:
-                logger.error(f"Failed to buy {symbol}: {response['error']}")
-                return False
+        # Step 2: Sort by 24h growth (integer %), then volume
+        candidates.sort(key=lambda x: (int(x[1]), x[2]), reverse=True)
 
-            # Track the position
-            filled_amount = float(response['filledAmount'])
-            filled_quote = float(response['filledAmountQuote'])
-            buy_price = filled_quote / filled_amount if filled_amount > 0 else 0
-            fee = float(response['feePaid'])
+        logger.info(f"Analyzing top candidates (sorted by growth and volume)...")
 
-            position = OpenPosition(
-                symbol=symbol,
-                buy_datetime=datetime.now(),
-                amount=filled_amount,
-                buy_price=buy_price,
-                total_cost=filled_quote + fee,
-                reason_for_buying=reason
-            )
+        # Step 3: Analyze candidates in order until we have enough positions
+        opportunities: list[tuple[str, str, float, float]] = []
 
-            self.positions[symbol] = position
-            self._save_positions()
+        for symbol, growth_24h, volume_24h in candidates:
+            # Early exit if we already have enough opportunities
+            if len(opportunities) >= positions_to_open:
+                logger.info(f"Found {positions_to_open} opportunities, stopping analysis early")
+                break
 
-            logger.info(
-                f"BOUGHT {symbol}: {filled_amount} @ {buy_price:.2f} EUR/coin "
-                f"(total: {filled_quote:.2f} EUR + {fee:.2f} fee)"
-            )
+            try:
+                # Multi-strategy confluence analysis
+                signal, confidence, reason = self.analyze_position_with_strategies(symbol)
 
-            # Log the trade
-            self._log_trade("BUY", symbol, {
-                "reason": reason,
-                "amount": filled_amount,
-                "buy_price": buy_price,
-                "total_cost": filled_quote + fee,
-                "fee": fee,
-            })
+                # Only consider BUY signals with sufficient confidence
+                if signal not in [Signal.BUY, Signal.STRONG_BUY]:
+                    logger.debug(f"{symbol}: {signal.value} signal (not buying)")
+                    continue
 
-            return True
+                if confidence < settings.bot_entry_min_confidence:
+                    logger.debug(f"{symbol}: {confidence:.0%} confidence (below {settings.bot_entry_min_confidence:.0%} threshold)")
+                    continue
 
-        except Exception as e:
-            logger.error(f"Error buying {symbol}: {e}")
-            return False
+                full_reason = (
+                    f"{reason} | 24h: +{growth_24h:.1f}% | "
+                    f"Vol: €{volume_24h:,.0f} | Conf: {confidence:.0%}"
+                )
+                opportunities.append((symbol, full_reason, volume_24h, confidence))
+
+                logger.info(f"Opportunity {len(opportunities)}/{positions_to_open}: {symbol} - {confidence:.0%} confidence, +{growth_24h:.1f}% growth")
+
+            except Exception as e:
+                logger.debug(f"Error analyzing {symbol}: {e}")
+
+        # Log final results
+        if opportunities:
+            logger.info(f"Selected {len(opportunities)} opportunity/ies:")
+            for i, (sym, reason, vol, conf) in enumerate(opportunities, 1):
+                logger.info(f"  {i}. {sym}: {conf:.0%} confidence, €{vol:,.0f} volume")
+        else:
+            logger.info("No opportunities found matching entry criteria (signal + confidence)")
+
+        return [(sym, reason) for sym, reason, _, _ in opportunities]
 
     def open_new_positions(self, max_positions: int) -> None:
         """Find and open new trading positions."""
         balance = self.get_account_balance()
         available = balance["available_funds"]
 
-        # Keep some buffer
-        tradeable = available * 0.975
-        min_per_position = 5.1
+        # Use configured percentage of available funds
+        tradeable = available * (settings.bot_max_allocation_percent / 100)
+        min_per_position = settings.bot_min_position_size
 
         current_positions = len(self.positions)
         positions_to_open = max_positions - current_positions
@@ -397,72 +415,127 @@ class TradingBot:
         # Calculate amount per position
         amount_per_position = tradeable / len(opportunities)
 
-        logger.info(f"Opening {len(opportunities)} positions with {amount_per_position:.2f} EUR each")
+        logger.info(
+            f"Using {settings.bot_max_allocation_percent}% of available funds ({tradeable:.2f} EUR) "
+            f"to open {len(opportunities)} positions with {amount_per_position:.2f} EUR each"
+        )
 
         # Buy the symbols
         for symbol, reason in opportunities:
             self.buy_symbol(symbol, amount_per_position, reason)
-            time.sleep(1)  # Small delay between buys
+            time.sleep(settings.bot_buy_delay_seconds)
 
-    def run_iteration(self) -> None:
-        """Run one iteration of the trading bot."""
-        logger.info("=" * 80)
-        logger.info(f"Bot iteration started at {datetime.now()}")
-        logger.info("=" * 80)
+    def buy_symbol(self, symbol: str, amount_eur: float, reason: str) -> bool:
+        """Buy a symbol and track the position."""
+        try:
+            # Execute buy order
+            response = self.client.buy(symbol, amount_eur)
 
-        # Get current state
-        balance = self.get_account_balance()
-        logger.info(f"Available funds: {balance['available_funds']:.2f} EUR")
-        logger.info(f"Total gains: {balance['total_gains']:+.2f} EUR")
+            if "error" in response:
+                logger.error(f"Failed to buy {symbol}: {response['error']}")
+                return False
 
-        # Update positions
-        self.get_current_positions()
+            # Track the position
+            filled_amount = float(response['filledAmount'])
+            filled_quote = float(response['filledAmountQuote'])
+            buy_price = filled_quote / filled_amount if filled_amount > 0 else 0
+            fee = float(response['feePaid'])
 
-        # Evaluate existing positions (may sell some)
-        self.evaluate_existing_positions()
+            position = OpenPosition(
+                symbol=symbol,
+                buy_datetime=datetime.now(),
+                amount=filled_amount,
+                buy_price=buy_price,
+                ath=buy_price,  # Initialize ATH to purchase price
+                total_cost=filled_quote + fee,
+                reason_for_buying=reason
+            )
 
-        # Look for new opportunities
-        self.open_new_positions(settings.bot_num_positions)
+            self.positions[symbol] = position
+            self._save_positions()
 
-        logger.info(f"Iteration complete. Open positions: {len(self.positions)}")
+            logger.info(
+                f"BOUGHT {symbol}: {filled_amount} @ {buy_price:.2f} EUR/coin "
+                f"(total: {filled_quote:.2f} EUR + {fee:.2f} fee)"
+            )
 
-    def run(self) -> None:
-        """Run the bot in an infinite loop."""
-        if not settings.bot_enabled:
-            logger.error("Bot is not enabled in settings. Set BOT_ENABLED=true to start.")
-            return
+            # Log the trade
+            self._log_trade("BUY", symbol, {
+                "reason": reason,
+                "amount": filled_amount,
+                "buy_price": buy_price,
+                "total_cost": filled_quote + fee,
+                "buy_fee": fee,
+            })
 
-        logger.info("=" * 80)
-        logger.info(f"Starting {settings.app_name} Trading Bot v{settings.app_version}")
-        logger.info(f"Max positions: {settings.bot_num_positions}")
-        logger.info(f"Update interval: {settings.bot_update_interval} minutes")
-        logger.info(f"Volume threshold: {settings.bot_volume_limit:,.0f} EUR")
-        logger.info("=" * 80)
+            return True
 
-        while True:
-            try:
-                iteration_start = datetime.now()
+        except Exception as e:
+            logger.error(f"Error buying {symbol}: {e}")
+            return False
 
-                self.run_iteration()
+    # Private helpers
+    def _load_positions(self, silent: bool = False) -> None:
+        """Load positions from S3."""
+        try:
+            data = self.s3_storage.download_json(settings.s3_positions_key)
+            if data is not None:
+                self.positions = {
+                    symbol: OpenPosition(**pos_data)
+                    for symbol, pos_data in data.items()
+                }
+                if not silent:
+                    logger.info(f"Loaded {len(self.positions)} existing positions from S3 ({settings.s3_positions_key})")
+            else:
+                self.positions = {}
+                if not silent:
+                    logger.info("No existing positions found in S3")
+        except Exception as e:
+            if not silent:
+                logger.error(f"Failed to load positions from S3: {e}")
+            self.positions = {}
 
-                # Calculate sleep time
-                iteration_duration = (datetime.now() - iteration_start).total_seconds()
-                sleep_time = (settings.bot_update_interval * 60) - iteration_duration
+    def _save_positions(self) -> None:
+        """Save positions to S3."""
+        try:
+            data = {
+                symbol: pos.model_dump(mode="json")
+                for symbol, pos in self.positions.items()
+            }
+            success = self.s3_storage.upload_json(settings.s3_positions_key, data)
+            if success:
+                logger.info(f"Saved {len(self.positions)} positions to S3 ({settings.s3_positions_key})")
+            else:
+                logger.error("Failed to save positions to S3")
+        except Exception as e:
+            logger.error(f"Failed to save positions to S3: {e}")
 
-                if sleep_time > 0:
-                    logger.info(f"Sleeping for {sleep_time:.0f} seconds until next iteration...")
-                    logger.info("=" * 80)
-                    time.sleep(sleep_time)
-                else:
-                    logger.warning(f"Iteration took {iteration_duration:.0f}s (longer than update interval)")
+    def _log_trade(self, action: str, symbol: str, details: dict[str, Any]) -> None:
+        """Log a trade to S3."""
+        trade_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "symbol": symbol,
+            **details
+        }
 
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
-                break
-            except Exception as e:
-                logger.error(f"Error in bot iteration: {e}", exc_info=True)
-                logger.info("Sleeping 60 seconds before retry...")
-                time.sleep(60)
+        try:
+            # Download existing logs from S3
+            logs = self.s3_storage.download_json(settings.s3_trades_key)
+            if logs is None:
+                logs = []
+
+            # Append new trade
+            logs.append(trade_entry)
+
+            # Upload back to S3
+            success = self.s3_storage.upload_json(settings.s3_trades_key, logs)
+            if success:
+                logger.info(f"Logged {action} trade for {symbol} to S3")
+            else:
+                logger.error(f"Failed to log {action} trade for {symbol} to S3")
+        except Exception as e:
+            logger.error(f"Failed to log trade to S3: {e}")
 
 
 def main() -> None:

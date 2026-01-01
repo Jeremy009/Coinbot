@@ -1,6 +1,5 @@
 """Tests for OHLCVCandles model."""
 
-import numpy as np
 import pandas as pd
 
 from coinbot_backend.models.candles import OHLCVCandles

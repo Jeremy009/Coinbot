@@ -1,7 +1,6 @@
 """OHLCV Candles data model."""
 
 from datetime import datetime
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -54,7 +53,7 @@ class OHLCVCandles:
 
         if len(self.timestamps) > 0:
             self.timespan = (
-                np.max(self.timestamps) - np.min(timestamps)
+                np.max(self.timestamps) - np.min(self.timestamps)
             ) / 1000.0 + TIME_RESOLUTIONS[time_resolution]
         else:
             self.timespan = 0.0
@@ -67,8 +66,14 @@ class OHLCVCandles:
         self._dataframe_object: pd.DataFrame | None = None
 
         # Validate data integrity
-        assert len(timestamps) == len(opening_positions) == len(close_positions) == len(high_positions)
-        assert len(timestamps) == len(low_positions) == len(volumes)
+        if not (len(timestamps) == len(opening_positions) == len(close_positions) == len(high_positions)):
+            raise CoinbotUnexpectedValueError(
+                "OHLC data arrays must have the same length"
+            )
+        if not (len(timestamps) == len(low_positions) == len(volumes)):
+            raise CoinbotUnexpectedValueError(
+                "OHLCV data arrays must have the same length"
+            )
 
         if self.order not in ["older-to-newer", "newer-to-older"]:
             raise CoinbotUnexpectedValueError("Order should be either older-to-newer or newer-to-older")

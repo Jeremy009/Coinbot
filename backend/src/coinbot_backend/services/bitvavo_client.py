@@ -24,7 +24,7 @@ def limit_api_calls(func: F) -> F:
     """
     Decorator to check API rate limits before making calls.
 
-    If remaining calls are low (< 100), automatically waits for rate limit reset.
+    If remaining calls are low (< threshold), automatically waits for rate limit reset.
     Bitvavo rate limits: 1000 calls/minute, resets on rolling 1-minute window.
     If limit is exceeded, account is blocked for 1 minute.
     """
@@ -34,11 +34,12 @@ def limit_api_calls(func: F) -> F:
         remaining = self.get_remaining_limit()
 
         # If we're running low on API calls, wait for the rate limit to reset
-        if remaining < 100:
+        if remaining < settings.bitvavo_rate_limit_threshold:
             logger.warning(
-                f"Only {remaining} API calls remaining. Waiting 60 seconds for rate limit reset..."
+                f"Only {remaining} API calls remaining. "
+                f"Waiting {settings.bitvavo_rate_limit_reset_seconds} seconds for rate limit reset..."
             )
-            time.sleep(60)  # Wait 1 minute for rate limit to reset
+            time.sleep(settings.bitvavo_rate_limit_reset_seconds)
             remaining = self.get_remaining_limit()
             logger.info(f"Rate limit reset. Now have {remaining} calls remaining.")
 
@@ -50,8 +51,14 @@ def limit_api_calls(func: F) -> F:
 class BitvavoClient:
     """Wrapper for the Bitvavo API client with rate limiting and error handling."""
 
-    def __init__(self) -> None:
-        """Initialize the Bitvavo client."""
+    def __init__(self, dry_run: bool = False) -> None:
+        """
+        Initialize the Bitvavo client.
+
+        Args:
+            dry_run: If True, simulates trades without placing real orders
+        """
+        self.dry_run = dry_run
         self._client = Bitvavo(
             {
                 "RESTURL": settings.bitvavo_rest_url,
@@ -64,30 +71,47 @@ class BitvavoClient:
         )
         self.available_symbols = self.get_available_symbols()
 
+        # Dry-run mode: simulated balances
+        if self.dry_run:
+            self._dry_run_balances: dict[str, float] = {
+                "EUR": settings.bot_dry_run_initial_balance
+            }
+            self._dry_run_order_counter = 0
+            logger.info(
+                f"DRY-RUN MODE ENABLED - Starting with €{settings.bot_dry_run_initial_balance:.2f}"
+            )
+
     def get_remaining_limit(self) -> int:
         """Get remaining API calls allowed (max 1000 calls per minute)."""
         return self._client.getRemainingLimit()
 
     @limit_api_calls
     def buy(self, symbol: str, amount_in_euro: float) -> dict[str, Any]:
-        """Place a BUY market order."""
+        """
+        Place a BUY market order.
+
+        In dry-run mode, simulates the order without hitting the exchange.
+        """
+        if self.dry_run:
+            return self._simulate_buy_order(symbol, amount_in_euro)
+
         return self._client.placeOrder(
             symbol + "-EUR", "buy", "market", {"amountQuote": str(amount_in_euro)}
         )
 
     @limit_api_calls
     def sell(self, symbol: str, amount_in_coins: float) -> dict[str, Any]:
-        """Place a SELL market order."""
+        """
+        Place a SELL market order.
+
+        In dry-run mode, simulates the order without hitting the exchange.
+        """
+        if self.dry_run:
+            return self._simulate_sell_order(symbol, amount_in_coins)
+
         return self._client.placeOrder(
             symbol + "-EUR", "sell", "market", {"amount": str(amount_in_coins)}
         )
-
-    @limit_api_calls
-    def panic(self) -> None:
-        """Place a SELL market order for each and every owned symbol on the exchange."""
-        for owned_symbol in self.get_owned_symbols():
-            amount_in_coins = self.get_symbol_owned_amount(owned_symbol)
-            self.sell(owned_symbol, amount_in_coins)
 
     @limit_api_calls
     def get_available_symbols(self) -> list[str]:
@@ -102,6 +126,10 @@ class BitvavoClient:
     @limit_api_calls
     def get_total_deposited(self) -> float:
         """Get total amount deposited into the account."""
+        if self.dry_run:
+            # In dry-run mode, return the initial balance as the "deposited" amount
+            return settings.bot_dry_run_initial_balance
+
         total = 0.0
         for deposit in self._client.depositHistory({}):
             total += float(deposit["amount"]) - float(deposit["fee"])
@@ -110,6 +138,10 @@ class BitvavoClient:
     @limit_api_calls
     def get_total_withdrawn(self) -> float:
         """Get total amount withdrawn from the account."""
+        if self.dry_run:
+            # In dry-run mode, no withdrawals have been made
+            return 0.0
+
         total = 0.0
         for withdrawal in self._client.withdrawalHistory({}):
             total += float(withdrawal["amount"]) - float(withdrawal["fee"])
@@ -123,50 +155,67 @@ class BitvavoClient:
     @limit_api_calls
     def get_available_funds(self) -> float:
         """Get available EUR funds."""
+        if self.dry_run:
+            return self._dry_run_balances.get("EUR", 0.0)
         return self.get_symbol_owned_amount("EUR")
-
-    @limit_api_calls
-    def get_open_positions(self) -> list[tuple[str, float]]:
-        """Get all owned symbols with an open position."""
-        open_positions = []
-        for balance in self._client.balance({}):
-            symbol = balance["symbol"]
-            if symbol != "EUR" and float(balance["available"]) > 0.0:
-                open_positions.append((symbol, float(balance["available"])))
-        return open_positions
-
-    @limit_api_calls
-    def get_open_orders(self) -> list[tuple[str, float]]:
-        """Get all owned symbols with open orders."""
-        open_orders = []
-        for balance in self._client.balance({}):
-            symbol = balance["symbol"]
-            if symbol != "EUR" and float(balance["inOrder"]) > 0.0:
-                open_orders.append((symbol, float(balance["inOrder"])))
-        return open_orders
 
     @limit_api_calls
     def get_total_wallet_balance(self) -> float:
         """Get total portfolio value in EUR."""
-        total = 0.0
-        for balance in self._client.balance({}):
+        if self.dry_run:
+            # Calculate total value: EUR + all crypto positions valued at current prices
+            total = self._dry_run_balances.get("EUR", 0.0)
+            crypto_symbols = [s for s in self._dry_run_balances.keys() if s != "EUR"]
+            if crypto_symbols:
+                prices = self.get_symbols_prices(crypto_symbols)
+                for symbol, price in zip(crypto_symbols, prices):
+                    total += self._dry_run_balances[symbol] * price
+            return total
+
+        balances = self._client.balance({})
+
+        # Separate EUR and crypto balances
+        eur_balance = 0.0
+        crypto_symbols = []
+        crypto_amounts = {}
+
+        for balance in balances:
             symbol = balance["symbol"]
+            amount = float(balance["available"])
             if symbol == "EUR":
-                total += float(balance["available"])
-            else:
-                total += float(balance["available"]) * self.get_symbol_price(symbol)
+                eur_balance = amount
+            elif amount > 0:
+                crypto_symbols.append(symbol)
+                crypto_amounts[symbol] = amount
+
+        # Batch fetch prices for all crypto symbols
+        total = eur_balance
+        if crypto_symbols:
+            prices = self.get_symbols_prices(crypto_symbols)
+            for symbol, price in zip(crypto_symbols, prices):
+                total += crypto_amounts[symbol] * price
 
         # Add value locked in orders
         orders = self._client.ordersOpen(options={})
-        for order in orders:
-            symbol = order["market"].split("-")[0]
-            total += float(self.get_symbol_price(symbol)) * float(order["amount"])
+        if orders:
+            order_symbols = list(set(order["market"].split("-")[0] for order in orders))
+            order_prices_dict = {}
+            if order_symbols:
+                order_prices = self.get_symbols_prices(order_symbols)
+                order_prices_dict = dict(zip(order_symbols, order_prices))
+
+            for order in orders:
+                symbol = order["market"].split("-")[0]
+                total += order_prices_dict.get(symbol, 0.0) * float(order["amount"])
 
         return total
 
     @limit_api_calls
     def get_owned_symbols(self) -> list[str]:
         """Get list of owned symbols (excluding EUR)."""
+        if self.dry_run:
+            return [s for s in self._dry_run_balances.keys() if s != "EUR" and self._dry_run_balances[s] > 0]
+
         owned = []
         for balance in self._client.balance({}):
             symbol = balance["symbol"]
@@ -210,6 +259,10 @@ class BitvavoClient:
             raise CoinbotUnexpectedValueError(
                 f"Could not retrieve amount of coins because {symbol} does not exist."
             )
+
+        if self.dry_run:
+            return self._dry_run_balances.get(symbol, 0.0)
+
         for balance in self._client.balance({}):
             if balance["symbol"].lower() == symbol.lower():
                 return float(balance["available"])
@@ -313,6 +366,114 @@ class BitvavoClient:
             order="newer-to-older",
         )
 
+    # Dry-run simulation helpers
+    def _simulate_buy_order(self, symbol: str, amount_in_euro: float) -> dict[str, Any]:
+        """
+        Simulate a buy order in dry-run mode.
+
+        Uses Bitvavo's taker fee (default 0.25%) since market orders always take liquidity.
+        Fee rate is configurable via BOT_DRY_RUN_FEE_RATE setting.
+        """
+        # Get current market price
+        current_price = self.get_symbol_price(symbol)
+
+        # Simulate Bitvavo taker fee (market orders)
+        fee_rate = settings.bot_dry_run_fee_rate
+        fee_amount = amount_in_euro * fee_rate
+        amount_after_fee = amount_in_euro - fee_amount
+
+        # Calculate how many coins we get
+        coins_bought = amount_after_fee / current_price
+
+        # Update simulated balances
+        current_eur = self._dry_run_balances.get("EUR", 0.0)
+        if current_eur < amount_in_euro:
+            return {
+                "error": f"Insufficient EUR balance. Have {current_eur:.2f}, need {amount_in_euro:.2f}"
+            }
+
+        self._dry_run_balances["EUR"] = current_eur - amount_in_euro
+        self._dry_run_balances[symbol] = self._dry_run_balances.get(symbol, 0.0) + coins_bought
+
+        # Generate order ID
+        self._dry_run_order_counter += 1
+        order_id = f"dry-run-{self._dry_run_order_counter}"
+
+        logger.info(
+            f"DRY-RUN BUY: {coins_bought:.8f} {symbol} @ €{current_price:.2f} "
+            f"(cost: €{amount_in_euro:.2f}, fee: €{fee_amount:.4f})"
+        )
+
+        # Return response matching Bitvavo API format
+        return {
+            "orderId": order_id,
+            "market": f"{symbol}-EUR",
+            "created": int(time.time() * 1000),
+            "side": "buy",
+            "orderType": "market",
+            "filledAmount": str(coins_bought),
+            "filledAmountQuote": str(amount_after_fee),
+            "feePaid": str(fee_amount),
+            "feeCurrency": "EUR",
+            "status": "filled",
+        }
+
+    def _simulate_sell_order(self, symbol: str, amount_in_coins: float) -> dict[str, Any]:
+        """
+        Simulate a sell order in dry-run mode.
+
+        Uses Bitvavo's taker fee (default 0.25%) since market orders always take liquidity.
+        Fee rate is configurable via BOT_DRY_RUN_FEE_RATE setting.
+        """
+        # Get current market price
+        current_price = self.get_symbol_price(symbol)
+
+        # Calculate EUR value
+        eur_value = amount_in_coins * current_price
+
+        # Simulate Bitvavo taker fee (market orders)
+        fee_rate = settings.bot_dry_run_fee_rate
+        fee_amount = eur_value * fee_rate
+        eur_after_fee = eur_value - fee_amount
+
+        # Check balance
+        current_coins = self._dry_run_balances.get(symbol, 0.0)
+        if current_coins < amount_in_coins:
+            return {
+                "error": f"Insufficient {symbol} balance. Have {current_coins:.8f}, need {amount_in_coins:.8f}"
+            }
+
+        # Update simulated balances
+        self._dry_run_balances[symbol] = current_coins - amount_in_coins
+        self._dry_run_balances["EUR"] = self._dry_run_balances.get("EUR", 0.0) + eur_after_fee
+
+        # Clean up zero balances
+        if self._dry_run_balances[symbol] == 0.0:
+            del self._dry_run_balances[symbol]
+
+        # Generate order ID
+        self._dry_run_order_counter += 1
+        order_id = f"dry-run-{self._dry_run_order_counter}"
+
+        logger.info(
+            f"DRY-RUN SELL: {amount_in_coins:.8f} {symbol} @ €{current_price:.2f} "
+            f"(received: €{eur_after_fee:.2f}, fee: €{fee_amount:.4f})"
+        )
+
+        # Return response matching Bitvavo API format
+        return {
+            "orderId": order_id,
+            "market": f"{symbol}-EUR",
+            "created": int(time.time() * 1000),
+            "side": "sell",
+            "orderType": "market",
+            "filledAmount": str(amount_in_coins),
+            "filledAmountQuote": str(eur_value),
+            "feePaid": str(fee_amount),
+            "feeCurrency": "EUR",
+            "status": "filled",
+        }
+
 
 # Singleton instance
 _bitvavo_client: BitvavoClient | None = None
@@ -322,5 +483,5 @@ def get_bitvavo_client() -> BitvavoClient:
     """Get or create the Bitvavo client singleton."""
     global _bitvavo_client
     if _bitvavo_client is None:
-        _bitvavo_client = BitvavoClient()
+        _bitvavo_client = BitvavoClient(dry_run=settings.bot_dry_run)
     return _bitvavo_client

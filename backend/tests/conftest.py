@@ -1,12 +1,12 @@
 """Pytest configuration and fixtures."""
 
 import pytest
+from coinbot_backend.services import bitvavo_client
 
 
 @pytest.fixture
 def mock_bitvavo_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock Bitvavo client for testing."""
-    from coinbot_backend.services import bitvavo_client
 
     class MockBitvavoClient:
         """Mock Bitvavo client for testing."""

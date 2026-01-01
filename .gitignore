@@ -87,3 +87,4 @@ backend/.env
 # Trading bot data
 positions.json
 trades.log.json
+data/

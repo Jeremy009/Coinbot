@@ -7,10 +7,6 @@ class CoinbotException(Exception):
     pass
 
 
-# Legacy alias for backwards compatibility
-CoinbotBaseError = CoinbotException
-
-
 class CoinbotAPIError(CoinbotException):
     """API-related error."""
 
@@ -21,10 +17,6 @@ class CoinbotRateLimitError(CoinbotException):
     """Rate limit exceeded error."""
 
     pass
-
-
-# Legacy alias for backwards compatibility
-CoinbotExceededNumAPICallsError = CoinbotRateLimitError
 
 
 class CoinbotInvalidSymbolError(CoinbotException):

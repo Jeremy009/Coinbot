@@ -1,54 +1,30 @@
 """
-Crypto Trading Strategies - Stateless Technical Analysis Functions
+Crypto Trading Strategies - Unified Technical Analysis Module
 
-This module provides stateless trading signal generators based on proven technical analysis
-strategies. Each strategy function receives market data and returns a trading signal.
+This module consolidates all technical analysis functionality:
+- Indicator calculations (MACD, RSI, EMA/SMA, Bollinger Bands, ATR)
+- Trading signal generators
+- Multi-indicator strategies
 
-Strategies implemented:
-1. RSI + MACD Combined (73% win rate in backtests)
-2. EMA Crossover (Golden/Death Cross)
-3. Bollinger Bands Mean Reversion
-4. Bollinger Bands Squeeze Breakout
-5. Multi-Indicator Confluence Strategy
+All strategy functions have a uniform signature:
+    strategy_<name>(candles: OHLCVCandles | pd.DataFrame, **params) -> TradeSignal
+
+Active strategies:
+1. strategy_rsi_macd - RSI + MACD Combined (73% win rate in backtests)
+2. strategy_ema_crossover - Golden/Death Cross signals
+3. strategy_bollinger_mean_reversion - Mean reversion in ranging markets
+4. strategy_multi_confluence - Combines all strategies for high-confidence signals
 
 All functions are stateless - they take price data and return signals.
 """
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any
-
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 
 from coinbot_backend.core.exceptions import CoinbotUnexpectedTypeError
 from coinbot_backend.models.candles import OHLCVCandles
+from coinbot_backend.models.trading import Signal, TradeSignal
 
-
-class Signal(Enum):
-    """Trading signals"""
-    STRONG_BUY = "strong_buy"
-    BUY = "buy"
-    HOLD = "hold"
-    SELL = "sell"
-    STRONG_SELL = "strong_sell"
-
-
-@dataclass
-class TradeSignal:
-    """Result from a trading strategy"""
-    signal: Signal
-    confidence: float  # 0.0 to 1.0
-    strategy_name: str
-    reason: str
-    suggested_stop_loss_pct: float | None = None
-    suggested_take_profit_pct: float | None = None
-    indicators: dict[str, Any] | None = None
-
-
-# =============================================================================
-# INDICATOR CALCULATIONS (Pure functions)
-# =============================================================================
 
 def calculate_sma(prices: np.ndarray, period: int) -> np.ndarray:
     """Calculate Simple Moving Average"""
@@ -202,19 +178,6 @@ def calculate_atr(
 
     return atr
 
-
-def calculate_bandwidth(
-    upper_band: np.ndarray,
-    lower_band: np.ndarray,
-    middle_band: np.ndarray
-) -> np.ndarray:
-    """Calculate Bollinger Band Width (for squeeze detection)"""
-    return (upper_band - lower_band) / middle_band  # type: ignore[no-any-return]
-
-
-# =============================================================================
-# TRADING STRATEGIES (Stateless signal generators)
-# =============================================================================
 
 def strategy_rsi_macd(
     candles: OHLCVCandles | pd.DataFrame,
@@ -674,151 +637,6 @@ def strategy_bollinger_mean_reversion(
     )
 
 
-def strategy_bollinger_squeeze_breakout(
-    candles: OHLCVCandles | pd.DataFrame,
-    bb_period: int = 20,
-    bb_std: float = 2.0,
-    squeeze_lookback: int = 30,
-    atr_period: int = 14
-) -> TradeSignal:
-    """
-    Bollinger Band Squeeze Breakout Strategy
-
-    Identifies periods of low volatility (squeeze) followed by breakouts.
-    Uses ATR for dynamic stop-loss placement.
-
-    Setup:
-    - Bandwidth at lowest point in lookback period (squeeze)
-
-    Buy Signal:
-    - Price closes above upper band during/after squeeze
-
-    Sell Signal:
-    - Price closes below lower band during/after squeeze
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-        bb_period: Bollinger Bands period
-        bb_std: Number of standard deviations for bands
-        squeeze_lookback: Lookback period for squeeze detection
-        atr_period: ATR calculation period
-
-    Returns:
-        TradeSignal with recommendation and details
-    """
-    # Extract OHLC data
-    if isinstance(candles, OHLCVCandles):
-        prices = np.array(candles.close_positions)
-        high = np.array(candles.high_positions)
-        low = np.array(candles.low_positions)
-        close = np.array(candles.close_positions)
-    elif isinstance(candles, pd.DataFrame):
-        prices = candles["close"].to_numpy()
-        high = candles["high"].to_numpy()
-        low = candles["low"].to_numpy()
-        close = candles["close"].to_numpy()
-    else:
-        raise CoinbotUnexpectedTypeError(f"Expected OHLCVCandles or DataFrame, got {type(candles)}")
-
-    min_data = max(bb_period, squeeze_lookback, atr_period) + 5
-    if len(prices) < min_data:
-        return TradeSignal(
-            signal=Signal.HOLD,
-            confidence=0.0,
-            strategy_name="BB_SQUEEZE",
-            reason=f"Need at least {min_data} data points"
-        )
-
-    upper, middle, lower = calculate_bollinger_bands(prices, bb_period, bb_std)
-    bandwidth = calculate_bandwidth(upper, lower, middle)
-    atr = calculate_atr(high, low, close, atr_period)
-
-    current_price = close[-1]
-    current_upper = upper[-1]
-    current_lower = lower[-1]
-    current_bandwidth = bandwidth[-1]
-    current_atr = atr[-1]
-
-    if np.isnan([current_upper, current_lower, current_bandwidth, current_atr]).any():
-        return TradeSignal(
-            signal=Signal.HOLD,
-            confidence=0.0,
-            strategy_name="BB_SQUEEZE",
-            reason="Indicators not ready"
-        )
-
-    # Check for squeeze (bandwidth at or near minimum)
-    recent_bandwidth = bandwidth[-squeeze_lookback:]
-    recent_bandwidth = recent_bandwidth[~np.isnan(recent_bandwidth)]
-
-    if len(recent_bandwidth) < 10:
-        return TradeSignal(
-            signal=Signal.HOLD,
-            confidence=0.0,
-            strategy_name="BB_SQUEEZE",
-            reason="Not enough bandwidth data"
-        )
-
-    bandwidth_percentile = np.sum(recent_bandwidth <= current_bandwidth) / len(recent_bandwidth)
-
-    is_squeeze = bandwidth_percentile <= 0.2  # Bottom 20% of bandwidth
-
-    # ATR-based stop loss
-    atr_stop_pct = (current_atr / current_price) * 100 * 2  # 2x ATR
-
-    indicators = {
-        "bb_upper": current_upper,
-        "bb_lower": current_lower,
-        "bandwidth": current_bandwidth,
-        "bandwidth_percentile": bandwidth_percentile,
-        "is_squeeze": is_squeeze,
-        "atr": current_atr,
-        "atr_pct": (current_atr / current_price) * 100
-    }
-
-    # STRONG BUY: Breakout above upper band during squeeze
-    if is_squeeze and current_price > current_upper:
-        return TradeSignal(
-            signal=Signal.STRONG_BUY,
-            confidence=0.75,
-            strategy_name="BB_SQUEEZE",
-            reason=f"Squeeze breakout above upper band (bandwidth: {bandwidth_percentile:.0%}ile)",
-            suggested_stop_loss_pct=atr_stop_pct,
-            suggested_take_profit_pct=atr_stop_pct * 2,
-            indicators=indicators
-        )
-
-    # STRONG SELL: Breakdown below lower band during squeeze
-    if is_squeeze and current_price < current_lower:
-        return TradeSignal(
-            signal=Signal.STRONG_SELL,
-            confidence=0.75,
-            strategy_name="BB_SQUEEZE",
-            reason=f"Squeeze breakdown below lower band (bandwidth: {bandwidth_percentile:.0%}ile)",
-            suggested_stop_loss_pct=atr_stop_pct,
-            suggested_take_profit_pct=atr_stop_pct * 2,
-            indicators=indicators
-        )
-
-    # Alert: Squeeze forming (no trade, but watch)
-    if is_squeeze:
-        return TradeSignal(
-            signal=Signal.HOLD,
-            confidence=0.6,
-            strategy_name="BB_SQUEEZE",
-            reason=f"Squeeze detected! Watching for breakout (bandwidth: {bandwidth_percentile:.0%}ile)",
-            indicators=indicators
-        )
-
-    return TradeSignal(
-        signal=Signal.HOLD,
-        confidence=0.4,
-        strategy_name="BB_SQUEEZE",
-        reason=f"No squeeze (bandwidth: {bandwidth_percentile:.0%}ile)",
-        indicators=indicators
-    )
-
-
 def strategy_multi_confluence(
     candles: OHLCVCandles | pd.DataFrame
 ) -> TradeSignal:
@@ -945,137 +763,3 @@ def strategy_multi_confluence(
         reason=f"No confluence (buy: {len(buy_signals)}, sell: {len(sell_signals)})",
         indicators=indicators
     )
-
-
-# =============================================================================
-# CONVENIENCE FUNCTIONS
-# =============================================================================
-
-def get_all_signals(
-    candles: OHLCVCandles | pd.DataFrame
-) -> dict[str, TradeSignal]:
-    """
-    Run all strategies and return their signals.
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-
-    Returns:
-        Dictionary mapping strategy name to TradeSignal
-    """
-    return {
-        "rsi_macd": strategy_rsi_macd(candles),
-        "ema_crossover": strategy_ema_crossover(candles),
-        "bb_mean_reversion": strategy_bollinger_mean_reversion(candles),
-        "bb_squeeze": strategy_bollinger_squeeze_breakout(candles),
-        "confluence": strategy_multi_confluence(candles)
-    }
-
-
-def simple_decision(
-    candles: OHLCVCandles | pd.DataFrame
-) -> tuple[str, float, str]:
-    """
-    Simplified decision function that returns a single recommendation.
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data (minimum 200 candles for best results)
-
-    Returns:
-        Tuple of (action, confidence, reason)
-        action: "buy", "sell", or "hold"
-        confidence: 0.0 to 1.0
-        reason: Human-readable explanation
-    """
-    signals = get_all_signals(candles)
-
-    # Weight the confluence signal heavily
-    confluence = signals["confluence"]
-
-    if confluence.signal == Signal.STRONG_BUY:
-        return ("buy", confluence.confidence, confluence.reason)
-    elif confluence.signal == Signal.STRONG_SELL:
-        return ("sell", confluence.confidence, confluence.reason)
-    elif confluence.signal == Signal.BUY:
-        return ("buy", confluence.confidence, confluence.reason)
-    elif confluence.signal == Signal.SELL:
-        return ("sell", confluence.confidence, confluence.reason)
-    else:
-        # Fall back to individual high-confidence signals
-        for name, signal in signals.items():
-            if signal.signal == Signal.STRONG_BUY and signal.confidence >= 0.75:
-                return ("buy", signal.confidence, f"[{name}] {signal.reason}")
-            elif signal.signal == Signal.STRONG_SELL and signal.confidence >= 0.75:
-                return ("sell", signal.confidence, f"[{name}] {signal.reason}")
-
-        return ("hold", 0.5, "No strong signals - waiting for better setup")
-
-
-# =============================================================================
-# EXAMPLE USAGE
-# =============================================================================
-
-if __name__ == "__main__":
-    # Generate sample data for testing
-    np.random.seed(42)
-    n_points = 300
-
-    # Simulate price movement with trend and noise
-    base_price = 50000  # BTC-like price
-    trend = np.linspace(0, 5000, n_points)
-    noise = np.cumsum(np.random.randn(n_points) * 500)
-    close_prices = base_price + trend + noise
-
-    # Simulate OHLC (simplified)
-    high_prices = close_prices * (1 + np.random.rand(n_points) * 0.02)
-    low_prices = close_prices * (1 - np.random.rand(n_points) * 0.02)
-    open_prices = close_prices + np.random.randn(n_points) * 100
-    volumes = np.random.rand(n_points) * 1000000
-
-    # Generate timestamps (1 hour candles)
-    import time
-    current_time = time.time() * 1000  # milliseconds
-    timestamps = [current_time - (n_points - i) * 3600000 for i in range(n_points)]
-
-    # Create OHLCVCandles object
-    candles = OHLCVCandles(
-        symbol="BTC",
-        timestamps=timestamps,
-        time_resolution="1h",
-        opening_positions=open_prices.tolist(),
-        high_positions=high_prices.tolist(),
-        low_positions=low_prices.tolist(),
-        close_positions=close_prices.tolist(),
-        volumes=volumes.tolist(),
-        order="older-to-newer"
-    )
-
-    print("=" * 60)
-    print("CRYPTO TRADING STRATEGIES - DEMO")
-    print("=" * 60)
-    print(f"\nAnalyzing {n_points} candles for {candles.symbol}...")
-    print(f"Current price: ${close_prices[-1]:,.2f}")
-    print(f"Timespan: {candles.timespan_in_days:.1f} days")
-    print()
-
-    # Get all signals
-    signals = get_all_signals(candles)
-
-    for name, signal in signals.items():
-        print(f"\n--- {name.upper()} ---")
-        print(f"Signal: {signal.signal.value}")
-        print(f"Confidence: {signal.confidence:.1%}")
-        print(f"Reason: {signal.reason}")
-        if signal.suggested_stop_loss_pct:
-            print(f"Suggested SL: {signal.suggested_stop_loss_pct:.1f}%")
-        if signal.suggested_take_profit_pct:
-            print(f"Suggested TP: {signal.suggested_take_profit_pct:.1f}%")
-
-    print("\n" + "=" * 60)
-    print("SIMPLE DECISION")
-    print("=" * 60)
-
-    action, confidence, reason = simple_decision(candles)
-    print(f"\nRecommendation: {action.upper()}")
-    print(f"Confidence: {confidence:.1%}")
-    print(f"Reason: {reason}")

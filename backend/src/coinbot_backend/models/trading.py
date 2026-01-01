@@ -1,8 +1,32 @@
 """Trading-related data models."""
 
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class Signal(Enum):
+    """Trading signals."""
+
+    STRONG_BUY = "strong_buy"
+    BUY = "buy"
+    HOLD = "hold"
+    SELL = "sell"
+    STRONG_SELL = "strong_sell"
+
+
+class TradeSignal(BaseModel):
+    """Result from a trading strategy with validation."""
+
+    signal: Signal = Field(..., description="Trading signal recommendation")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level (0.0 to 1.0)")
+    strategy_name: str = Field(..., description="Name of the strategy that generated this signal")
+    reason: str = Field(..., description="Human-readable explanation")
+    suggested_stop_loss_pct: float | None = Field(None, ge=0.0, description="Stop loss percentage")
+    suggested_take_profit_pct: float | None = Field(None, ge=0.0, description="Take profit percentage")
+    indicators: dict[str, Any] | None = Field(None, description="Raw indicator values")
 
 
 class OpenPosition(BaseModel):
@@ -12,36 +36,6 @@ class OpenPosition(BaseModel):
     buy_datetime: datetime = Field(..., description="When the position was opened")
     amount: float = Field(..., description="Amount of coins purchased")
     buy_price: float = Field(..., description="Price per coin at purchase (EUR)")
+    ath: float = Field(..., description="All-time high price since purchase (EUR)")
     total_cost: float = Field(..., description="Total cost including fees (EUR)")
     reason_for_buying: str = Field(..., description="Strategy or reason for opening position")
-
-
-class BalanceResponse(BaseModel):
-    """Account balance information."""
-
-    available_funds: float = Field(..., description="Available EUR funds")
-    total_balance: float = Field(..., description="Total portfolio value in EUR")
-    total_deposited: float = Field(..., description="Total deposited amount")
-    total_withdrawn: float = Field(..., description="Total withdrawn amount")
-    total_gains: float = Field(..., description="Total gains/losses")
-
-
-class SymbolInfo(BaseModel):
-    """Information about a trading symbol."""
-
-    symbol: str = Field(..., description="Symbol name")
-    price: float = Field(..., description="Current price in EUR")
-    owned_amount: float = Field(..., description="Amount owned")
-    change_24h: float = Field(..., description="24h price change percentage")
-    volume_24h: float = Field(..., description="24h trading volume in EUR")
-
-
-class CandleData(BaseModel):
-    """OHLCV candle data."""
-
-    timestamp: int = Field(..., description="Unix timestamp")
-    open: float = Field(..., description="Opening price")
-    high: float = Field(..., description="Highest price")
-    low: float = Field(..., description="Lowest price")
-    close: float = Field(..., description="Closing price")
-    volume: float = Field(..., description="Trading volume")
