@@ -1,6 +1,5 @@
 """Main trading bot application with position tracking and multi-strategy support."""
 
-import logging
 import time
 from datetime import datetime
 from typing import Any
@@ -8,66 +7,14 @@ from typing import Any
 from tqdm import tqdm
 
 from coinbot_backend.config import settings
+from coinbot_backend.core.logging_setup import setup_logging
 from coinbot_backend.models.trading import OpenPosition, Signal
 from coinbot_backend.services.bitvavo_client import get_bitvavo_client
-from coinbot_backend.services.s3_storage import S3LogHandler, get_s3_storage
+from coinbot_backend.services.s3_storage import get_s3_storage
 from coinbot_backend.services.trading_strategies import strategy_multi_confluence
 
 
-# Custom formatter to show only module name (not full path)
-class ShortNameFormatter(logging.Formatter):
-    """Formatter that shows only the module name instead of full path."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        # Extract just the module name from the full path
-        # e.g., "coinbot_backend.services.bitvavo_client" -> "bitvavo_client"
-        if "." in record.name:
-            record.name = record.name.split(".")[-1]
-        return super().format(record)
-
-
-# Configure logging to console, file, and S3
-def setup_logging() -> logging.Logger:
-    """Configure logging to output to console, rotating file, and S3."""
-    log_format = "%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s"
-    log_level = getattr(logging, settings.log_level.upper())
-
-    # Create logger
-    logger = logging.getLogger(__name__)
-    logger.setLevel(log_level)
-
-    # Prevent duplicate handlers if this is called multiple times
-    if logger.handlers:
-        return logger
-
-    # Console handler (stdout/stderr)
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(ShortNameFormatter(log_format))
-    logger.addHandler(console_handler)
-
-    # S3 handler (upload logs to S3)
-    if settings.s3_enable_log_upload:
-        # Generate unique log filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_key = f"{settings.s3_log_key_prefix}bot_{timestamp}.log"
-
-        s3_storage = get_s3_storage()
-        s3_handler = S3LogHandler(
-            s3_storage=s3_storage,
-            log_key=log_key,
-            max_buffer_size=settings.s3_log_buffer_size,
-        )
-        s3_handler.setLevel(log_level)
-        s3_handler.setFormatter(ShortNameFormatter(log_format))
-        logger.addHandler(s3_handler)
-
-        logger.info(f"S3 logging enabled: s3://{settings.s3_bucket_name}/{log_key}")
-
-    return logger
-
-
-logger = setup_logging()
+logger = setup_logging(__name__)
 
 
 class TradingBot:
@@ -88,10 +35,8 @@ class TradingBot:
         # Load existing positions from S3 if exists (silently, will log after banner)
         self._load_positions(silent=True)
 
-    # Running
     def run(self) -> None:
         """Run one iteration of the trading bot."""
-        logger.info("=" * 80)
         logger.info(f"Bot iteration {self.iteration_number} started at {datetime.now()}")
 
         # Get current state
