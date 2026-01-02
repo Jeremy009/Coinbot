@@ -1,5 +1,4 @@
 """Bitvavo exchange client wrapper."""
-
 import functools
 import logging
 import math
@@ -73,13 +72,10 @@ class BitvavoClient:
 
         # Dry-run mode: simulated balances
         if self.dry_run:
-            self._dry_run_balances: dict[str, float] = {
-                "EUR": settings.bot_dry_run_initial_balance
-            }
+            initial_balance = settings.bot_dry_run_initial_balance
+            self._dry_run_balances: dict[str, float] = {"EUR": initial_balance}
             self._dry_run_order_counter = 0
-            logger.info(
-                f"DRY-RUN MODE ENABLED - Starting with €{settings.bot_dry_run_initial_balance:.2f}"
-            )
+            logger.info(f"DRY-RUN MODE ENABLED - Starting with €{initial_balance:.2f}")
 
     def get_remaining_limit(self) -> int:
         """Get remaining API calls allowed (max 1000 calls per minute)."""
@@ -96,7 +92,10 @@ class BitvavoClient:
             return self._simulate_buy_order(symbol, amount_in_euro)
 
         return self._client.placeOrder(
-            symbol + "-EUR", "buy", "market", {"amountQuote": str(amount_in_euro)}
+            symbol + "-EUR",
+            "buy",
+            "market",
+            {"amountQuote": str(amount_in_euro)}
         )
 
     @limit_api_calls
@@ -110,7 +109,10 @@ class BitvavoClient:
             return self._simulate_sell_order(symbol, amount_in_coins)
 
         return self._client.placeOrder(
-            symbol + "-EUR", "sell", "market", {"amount": str(amount_in_coins)}
+            symbol + "-EUR",
+            "sell",
+            "market",
+            {"amount": str(amount_in_coins)}
         )
 
     @limit_api_calls
@@ -374,6 +376,10 @@ class BitvavoClient:
         Uses Bitvavo's taker fee (default 0.25%) since market orders always take liquidity.
         Fee rate is configurable via BOT_DRY_RUN_FEE_RATE setting.
         """
+        # Validate symbol exists
+        if symbol not in self.available_symbols:
+            return {"error": f"Unknown market {symbol}-EUR"}
+
         # Get current market price
         current_price = self.get_symbol_price(symbol)
 
@@ -425,6 +431,10 @@ class BitvavoClient:
         Uses Bitvavo's taker fee (default 0.25%) since market orders always take liquidity.
         Fee rate is configurable via BOT_DRY_RUN_FEE_RATE setting.
         """
+        # Validate symbol exists
+        if symbol not in self.available_symbols:
+            return {"error": f"Unknown market {symbol}-EUR"}
+
         # Get current market price
         current_price = self.get_symbol_price(symbol)
 
@@ -440,7 +450,8 @@ class BitvavoClient:
         current_coins = self._dry_run_balances.get(symbol, 0.0)
         if current_coins < amount_in_coins:
             return {
-                "error": f"Insufficient {symbol} balance. Have {current_coins:.8f}, need {amount_in_coins:.8f}"
+                "error": f"Insufficient {symbol} balance. "
+                         f"Have {current_coins:.8f}, need {amount_in_coins:.8f}"
             }
 
         # Update simulated balances
