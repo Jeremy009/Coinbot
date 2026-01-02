@@ -363,6 +363,221 @@ def get_new_data(self, symbol: str) -> dict[str, Any]:
     return self._client.someMethod(symbol + "-EUR")
 ```
 
+## AWS Lambda Deployment
+
+The bot is designed to run as a containerized Lambda function on AWS, scheduled to run periodically (e.g., every 2 hours).
+
+### Prerequisites
+
+- AWS CLI configured with appropriate credentials
+- ECR repository created (e.g., `coinbot`)
+- S3 bucket for storing bot data (positions, trades, logs)
+- IAM role for Lambda with S3 access permissions
+- Bitvavo API credentials
+
+### Dockerfile
+
+The project includes a Lambda-compatible Dockerfile at the root:
+- Uses `public.ecr.aws/lambda/python:3.12` base image
+- Installs dependencies with pip
+- Copies source code to `${LAMBDA_TASK_ROOT}`
+- Sets proper file permissions with `chmod -R 755`
+- Handler: `lambda_handler.handler`
+
+**Key fixes for Lambda compatibility:**
+- Version handling: Uses hardcoded `__version__` instead of `importlib.metadata.version()` since package isn't installed
+- Permissions: Explicit `chmod -R 755` to avoid permission denied errors
+- Dependencies: Quoted package specs to prevent shell redirection issues
+
+### Build and Push to ECR
+
+```bash
+# Authenticate Docker to ECR
+aws ecr get-login-password --region eu-central-1 | \
+  docker login --username AWS --password-stdin <account-id>.dkr.ecr.eu-central-1.amazonaws.com
+
+# Build for ARM64 (cost-effective for Lambda)
+docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
+  -t <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest --push .
+```
+
+**Important flags:**
+- `--platform linux/arm64`: Lambda ARM64 architecture (cheaper than x86)
+- `--provenance=false --sbom=false`: Required for Lambda compatibility
+- `--push`: Push directly to ECR
+
+### Create Lambda Function
+
+```bash
+aws lambda create-function \
+  --function-name coinbot \
+  --package-type Image \
+  --code ImageUri=<account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --role arn:aws:iam::<account-id>:role/coinbot-lambda-role \
+  --architectures arm64 \
+  --memory-size 1024 \
+  --timeout 900 \
+  --region eu-central-1
+```
+
+**Configuration notes:**
+- Memory: 1024 MB (enough for pandas/numpy operations)
+- Timeout: 900 seconds (15 minutes) - bot needs time to analyze symbols
+- Architecture: ARM64 (better price/performance)
+
+### Update Existing Function
+
+```bash
+aws lambda update-function-code \
+  --function-name coinbot \
+  --image-uri <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --region eu-central-1
+```
+
+### Configure Environment Variables
+
+**Via AWS Console:**
+Lambda > coinbot > Configuration > Environment variables > Edit
+
+**Via AWS CLI:**
+```bash
+aws lambda update-function-configuration \
+  --function-name coinbot \
+  --environment "Variables={
+    BOT_ENABLED=true,
+    BOT_DRY_RUN=true,
+    BOT_DRY_RUN_INITIAL_BALANCE=1000,
+    BOT_NUM_POSITIONS=3,
+    BOT_MAX_ALLOCATION_PERCENT=5.0,
+    BOT_VOLUME_LIMIT=100000,
+    S3_BUCKET_NAME=your-bucket-name,
+    BITVAVO_API_KEY=your-api-key,
+    BITVAVO_API_SECRET=your-api-secret
+  }" \
+  --region eu-central-1
+```
+
+**Note:** Do NOT set `AWS_REGION` - it's reserved by Lambda. The region is available via `AWS_REGION` environment variable automatically.
+
+### IAM Permissions
+
+The Lambda execution role needs:
+
+**S3 Access:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name/*",
+        "arn:aws:s3:::your-bucket-name"
+      ]
+    }
+  ]
+}
+```
+
+**CloudWatch Logs (automatically attached):**
+- `arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole`
+
+### Schedule with EventBridge
+
+Run the bot every 2 hours:
+
+```bash
+# Create schedule rule
+aws events put-rule \
+  --name coinbot-schedule \
+  --schedule-expression "rate(2 hours)" \
+  --region eu-central-1
+
+# Grant EventBridge permission to invoke Lambda
+aws lambda add-permission \
+  --function-name coinbot \
+  --statement-id coinbot-eventbridge \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn arn:aws:events:eu-central-1:<account-id>:rule/coinbot-schedule \
+  --region eu-central-1
+
+# Add Lambda as target
+aws events put-targets \
+  --rule coinbot-schedule \
+  --targets "Id"="1","Arn"="arn:aws:lambda:eu-central-1:<account-id>:function:coinbot" \
+  --region eu-central-1
+```
+
+### Testing
+
+**Invoke manually:**
+```bash
+aws lambda invoke --function-name coinbot --region eu-central-1 response.json
+cat response.json
+```
+
+**Expected response (with dry-run enabled):**
+```json
+{
+  "statusCode": 200,
+  "body": "{\"message\": \"Bot iteration completed successfully\", \"version\": \"0.1.1\", \"request_id\": \"...\"}"
+}
+```
+
+**Check CloudWatch Logs:**
+```bash
+aws logs tail /aws/lambda/coinbot --follow --region eu-central-1
+```
+
+### Local Testing with Lambda Runtime Emulator
+
+Test the container locally before deploying:
+
+```bash
+# Build for local testing (amd64 for Mac/Linux)
+docker buildx build --platform linux/amd64 --provenance=false -t coinbot:test .
+
+# Run with Lambda emulator
+docker run --platform linux/amd64 -p 9000:8080 \
+  -e BOT_ENABLED=true \
+  -e BOT_DRY_RUN=true \
+  -e BOT_DRY_RUN_INITIAL_BALANCE=1000 \
+  -e BITVAVO_API_KEY=your-key \
+  -e BITVAVO_API_SECRET=your-secret \
+  -e S3_BUCKET_NAME=your-bucket \
+  coinbot:test
+
+# Test invocation (in another terminal)
+curl "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{}'
+```
+
+### Monitoring
+
+- **CloudWatch Logs**: `/aws/lambda/coinbot`
+- **S3 Logs**: `s3://your-bucket/logs/bot_YYYYMMDD_HHMMSS.log`
+- **S3 Positions**: `s3://your-bucket/positions.json`
+- **S3 Trades**: `s3://your-bucket/trades.log.json`
+
+### Common Issues and Solutions
+
+**Permission denied errors:**
+- Solution: Ensure `chmod -R 755 ${LAMBDA_TASK_ROOT}` is in Dockerfile
+
+**Package metadata not found:**
+- Solution: Use hardcoded `__version__` instead of `importlib.metadata.version()`
+
+**Shell redirection creating files:**
+- Solution: Quote all package specs in pip install (e.g., `"pydantic>=2.0.0"`)
+
+**OCI image format not supported:**
+- Solution: Use `--provenance=false --sbom=false` flags when building
+
 ## Code Quality
 
 The project enforces:

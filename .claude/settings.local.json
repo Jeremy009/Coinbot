@@ -36,7 +36,20 @@
       "Bash(uv pip install:*)",
       "Bash(make help:*)",
       "Bash(make install:*)",
-      "Bash(cut:*)"
+      "Bash(cut:*)",
+      "Bash(docker build:*)",
+      "Bash(docker login:*)",
+      "Bash(docker tag:*)",
+      "Bash(docker push:*)",
+      "Bash(docker manifest inspect:*)",
+      "Bash(docker buildx build:*)",
+      "Bash(docker run:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)",
+      "Bash(lsof:*)",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(docker exec:*)"
     ],
     "deny": [],
     "ask": []

@@ -1,8 +1,7 @@
 """Application configuration using pydantic-settings."""
 
-from importlib.metadata import version
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from coinbot_backend import __version__
 
 
 class Settings(BaseSettings):
@@ -12,7 +11,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Coinbot"
-    app_version: str = version("coinbot-backend")
+    app_version: str = __version__
     log_level: str = "INFO"
 
     # Bitvavo API

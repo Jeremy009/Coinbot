@@ -1,5 +1,5 @@
 """Coinbot backend package."""
 
-from importlib.metadata import version
-
-__version__ = version("coinbot-backend")
+# Something like __version__ = version("coinbot-backend") would be cleaner, but does not work
+# when the package is not installed (e.g., in Lambda container with copied source)
+__version__ = "0.1.1"

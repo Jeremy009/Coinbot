@@ -76,6 +76,121 @@ coinbot/
 └── README.md
 ```
 
+## Deployment
+
+### AWS Lambda Deployment
+
+The bot is designed to run on AWS Lambda with scheduled invocations.
+
+#### Prerequisites
+
+- AWS CLI configured with credentials
+- ECR repository created: `coinbot`
+- S3 bucket for storing bot data
+- Bitvavo API credentials
+
+#### Build and Deploy
+
+1. **Build and push Docker image to ECR**:
+```bash
+# Authenticate Docker to ECR
+aws ecr get-login-password --region eu-central-1 | \
+  docker login --username AWS --password-stdin <account-id>.dkr.ecr.eu-central-1.amazonaws.com
+
+# Build for ARM64 (Lambda)
+docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
+  -t <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest --push .
+```
+
+2. **Create or update Lambda function**:
+```bash
+# Create function (first time only)
+aws lambda create-function \
+  --function-name coinbot \
+  --package-type Image \
+  --code ImageUri=<account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --role arn:aws:iam::<account-id>:role/coinbot-lambda-role \
+  --architectures arm64 \
+  --memory-size 1024 \
+  --timeout 900 \
+  --region eu-central-1
+
+# Update existing function
+aws lambda update-function-code \
+  --function-name coinbot \
+  --image-uri <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --region eu-central-1
+```
+
+3. **Configure environment variables** (via AWS Console or CLI):
+```bash
+aws lambda update-function-configuration \
+  --function-name coinbot \
+  --environment "Variables={
+    BOT_ENABLED=true,
+    BOT_DRY_RUN=true,
+    BOT_DRY_RUN_INITIAL_BALANCE=1000,
+    BOT_NUM_POSITIONS=3,
+    BOT_MAX_ALLOCATION_PERCENT=5.0,
+    BOT_VOLUME_LIMIT=100000,
+    S3_BUCKET_NAME=your-bucket-name,
+    BITVAVO_API_KEY=your-api-key,
+    BITVAVO_API_SECRET=your-api-secret
+  }" \
+  --region eu-central-1
+```
+
+4. **Test the function**:
+```bash
+aws lambda invoke --function-name coinbot --region eu-central-1 response.json
+cat response.json
+```
+
+5. **Schedule with EventBridge** (optional - run every 2 hours):
+```bash
+# Create schedule rule
+aws events put-rule \
+  --name coinbot-schedule \
+  --schedule-expression "rate(2 hours)" \
+  --region eu-central-1
+
+# Grant EventBridge permission to invoke Lambda
+aws lambda add-permission \
+  --function-name coinbot \
+  --statement-id coinbot-eventbridge \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn arn:aws:events:eu-central-1:<account-id>:rule/coinbot-schedule \
+  --region eu-central-1
+
+# Add Lambda as target
+aws events put-targets \
+  --rule coinbot-schedule \
+  --targets "Id"="1","Arn"="arn:aws:lambda:eu-central-1:<account-id>:function:coinbot" \
+  --region eu-central-1
+```
+
+#### Local Testing with Lambda Runtime
+
+Test the container locally before deploying:
+
+```bash
+# Build for local testing (amd64)
+docker buildx build --platform linux/amd64 --provenance=false -t coinbot:test .
+
+# Run with Lambda emulator
+docker run --platform linux/amd64 -p 9000:8080 \
+  -e BOT_ENABLED=true \
+  -e BOT_DRY_RUN=true \
+  -e BITVAVO_API_KEY=your-key \
+  -e BITVAVO_API_SECRET=your-secret \
+  -e S3_BUCKET_NAME=your-bucket \
+  coinbot:test
+
+# Test invocation (in another terminal)
+curl "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{}'
+```
+
 ## Development
 
 ### Running Tests

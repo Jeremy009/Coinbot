@@ -1,38 +1,27 @@
-# Coinbot Trading Bot - Dockerfile
-# Python 3.12 with uv package manager
+# Coinbot Trading Bot - AWS Lambda Dockerfile
+# Uses AWS Lambda Python 3.12 base image
 
-FROM python:3.12-slim
+FROM public.ecr.aws/lambda/python:3.12
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Install dependencies first (before copying source code)
+RUN pip install --no-cache-dir \
+    "pydantic>=2.0.0" \
+    "pydantic-settings>=2.1.0" \
+    "python-dotenv>=1.0.0" \
+    "python-bitvavo-api>=1.2.2" \
+    "pandas>=2.0.0" \
+    "numpy>=1.24.0" \
+    "tqdm>=4.66.0" \
+    "matplotlib>=3.7.0" \
+    "boto3>=1.34.0" \
+    "botocore[crt]>=1.34.0"
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+# Copy backend source code to ${LAMBDA_TASK_ROOT}
+COPY backend/src/coinbot_backend ${LAMBDA_TASK_ROOT}/coinbot_backend
+COPY backend/lambda_handler.py ${LAMBDA_TASK_ROOT}/
 
-# Install uv package manager and add to PATH
-ENV PATH="/root/.local/bin:$PATH"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Fix file permissions for Lambda runtime
+RUN chmod -R 755 ${LAMBDA_TASK_ROOT}
 
-# Set working directory
-WORKDIR /app
-
-# Copy project files
-COPY backend/ /app/
-
-# Install Python dependencies using uv
-RUN uv sync --all-extras
-
-# Create directory for persistent data
-RUN mkdir -p /app/data
-
-# Volume for persistent data (positions, trades, logs)
-VOLUME ["/app/data"]
-
-# Set the command to run the bot
-CMD ["uv", "run", "python", "-m", "coinbot_backend.main"]
+# Set the CMD to your handler (function name in lambda_handler.py)
+CMD ["lambda_handler.handler"]

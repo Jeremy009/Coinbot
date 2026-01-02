@@ -35,6 +35,7 @@ class TradingBot:
         # Load existing positions from S3 if exists (silently, will log after banner)
         self._load_positions(silent=True)
 
+
     def run(self) -> None:
         """Run one iteration of the trading bot."""
         logger.info(f"Bot iteration {self.iteration_number} started at {datetime.now()}")
