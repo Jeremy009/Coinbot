@@ -1,6 +1,6 @@
 [project]
 name = "coinbot-backend"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Coinbot cryptocurrency trading backend"
 requires-python = ">=3.12"
 dependencies = [
@@ -28,6 +28,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/coinbot_backend/__init__.py"
 
 [tool.ruff]
 line-length = 100

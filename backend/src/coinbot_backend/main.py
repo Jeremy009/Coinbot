@@ -6,6 +6,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from coinbot_backend import __version__
 from coinbot_backend.config import settings
 from coinbot_backend.core.logging_setup import setup_logging
 from coinbot_backend.models.trading import OpenPosition, Signal
@@ -52,7 +53,7 @@ class TradingBot:
 
         # Initialize logger with run folder
         self.logger = setup_logging(__name__, run_folder=self.run_folder)
-        self.logger.info(f"Bot iteration started at {datetime.now()}")
+        self.logger.info(f"Bot iteration started at {datetime.now()} using coinbot V{__version__}")
         self.logger.info(f"Run folder: s3://{settings.s3_bucket_name}/{self.run_folder}")
 
         # Get current state

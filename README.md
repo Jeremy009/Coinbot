@@ -1,4 +1,4 @@
-# Coinbot
+    # Coinbot
 
 Stateless, automated cryptocurrency trading bot using MACD indicators.
 
@@ -93,13 +93,21 @@ The bot is designed to run on AWS Lambda with scheduled invocations.
 
 1. **Build and push Docker image to ECR**:
 ```bash
+# Authenticate to the AWS CLI
+aws login
+
 # Authenticate Docker to ECR
 aws ecr get-login-password --region eu-central-1 | \
-  docker login --username AWS --password-stdin <account-id>.dkr.ecr.eu-central-1.amazonaws.com
+  docker login --username AWS --password-stdin 080328315628.dkr.ecr.eu-central-1.amazonaws.com
 
 # Build for ARM64 (Lambda)
-docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
-  -t <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest --push .
+docker buildx build \                                                                                                        
+  --platform linux/arm64 \
+  --provenance=false \
+  --sbom=false \
+  -t 080328315628.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --push .
+
 ```
 
 2. **Create or update Lambda function**:
@@ -118,7 +126,7 @@ aws lambda create-function \
 # Update existing function
 aws lambda update-function-code \
   --function-name coinbot \
-  --image-uri <account-id>.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
+  --image-uri 080328315628.dkr.ecr.eu-central-1.amazonaws.com/coinbot:latest \
   --region eu-central-1
 ```
 
