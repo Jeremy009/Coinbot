@@ -67,7 +67,7 @@ make clean        # Remove generated files
 - Access via `from coinbot_backend.config import settings`
 
 ### S3 Storage
-- All bot data (positions, trades, logs) is stored in AWS S3, not on the filesystem
+- All bot data (positions, trades, logs, charts) is stored in AWS S3, not on the filesystem
 - Uses `services/s3_storage.py` for S3 operations
 - **Authentication methods** (in order of preference):
   1. **AWS Credential Chain** (recommended): AWS CLI, IAM role, environment variables
@@ -77,11 +77,18 @@ make clean        # Remove generated files
   - `S3_BUCKET_NAME` - S3 bucket name for storing data
 - **Data locations**:
   - Positions: `s3://{bucket}/positions.json`
-  - Trade logs: `s3://{bucket}/trades.log.json`
-  - Application logs: `s3://{bucket}/logs/bot_YYYYMMDD_HHMMSS.log`
+  - Trade logs: `s3://{bucket}/trades.json`
+  - Run folders: `s3://{bucket}/runs/YYYYMMDD_HHMM/`
+    - Application logs: `s3://{bucket}/runs/YYYYMMDD_HHMM/logs.txt`
+    - Technical analysis charts:
+      - `H_SYMBOL.png`: Held positions (with green buy marker)
+      - `S_SYMBOL.png`: Sold positions
+      - `B_SYMBOL.png`: Bought positions
+      - `X_SYMBOL.png`: Rejected symbols (passed pre-filter, failed strategy)
 - **Logging destinations** (simultaneous):
   1. **Console** (stdout/stderr) - real-time monitoring, CloudWatch integration
-  2. **S3** (logs/bot_TIMESTAMP.log) - persistent storage and analysis
+  2. **S3** (runs/YYYYMMDD_HHMM/logs.txt) - persistent storage and analysis
+- **Chart generation**: Every symbol analyzed generates a technical analysis chart showing all indicators, uploaded to S3 for later review
 
 **S3 operations are logged:**
 - Upload operations: "Uploading to S3: s3://bucket/key"
@@ -132,7 +139,10 @@ cd backend && uv run python test_s3_logging.py
 1. Set `BOT_DRY_RUN=true` in `backend/.env`
 2. Run: `cd backend && uv run python -m coinbot_backend.main`
 3. Watch logs to see simulated trades
-4. Check `positions.json` and `trades.log.json` for results
+4. Check S3 for results:
+   - `s3://bucket/positions.json` - Current positions
+   - `s3://bucket/trades.json` - Trade history
+   - `s3://bucket/runs/YYYYMMDD_HHMM/` - Run logs and charts
 5. Test script: `cd backend && uv run python test_dry_run.py`
 
 **Going live (USE EXTREME CAUTION):**
@@ -149,7 +159,9 @@ The bot (`main.py`) implements a **two-tier trading strategy with position track
 
 **Key Features:**
 - Persistent position tracking stored in S3 (`positions.json`)
-- Complete trade logging with P/L calculations stored in S3 (`trades.log.json`)
+- Complete trade logging with P/L calculations stored in S3 (`trades.json`)
+- Technical analysis chart generation for all analyzed symbols (H_, S_, B_, X_ charts)
+- Run-based organization with timestamped folders (runs/YYYYMMDD_HHMM/)
 - Single iteration execution (designed for scheduled/cron jobs)
 - Two-tier strategy: Fast MACD check → Advanced multi-strategy confluence
 - Risk management: Only uses configured % of available funds (default: 5%)
@@ -252,6 +264,70 @@ The bot now runs a single iteration and exits. You should schedule it using:
 - **AWS ECS Scheduled Tasks** (e.g., every 2 hours)
 - **Cron job** on a server (e.g., `0 */2 * * *` for every 2 hours)
 - **Kubernetes CronJob**
+
+### Technical Analysis & Visualization
+
+The bot includes a comprehensive technical analysis plotting tool that visualizes all indicators used for trading decisions:
+
+**Features:**
+- Candlestick chart with EMA overlays (12, 50, 200 periods)
+- Bollinger Bands (20-period, 2 standard deviations)
+- RSI indicator with overbought/oversold levels
+- MACD with signal line and histogram
+- Trading volume bars with automatic scaling (EUR, k EUR, M EUR)
+- Strategy signal and confidence in title
+- Time labels at 00h00 and 12h00 for readability
+- Consistent unit formatting with square brackets [EUR]
+
+**Usage:**
+```bash
+cd backend
+
+# Display interactive chart
+uv run python example_technical_analysis_plot.py BTC
+
+# Save to file
+uv run python example_technical_analysis_plot.py BTC --save
+
+# Custom parameters
+uv run python example_technical_analysis_plot.py ETH --resolution 4h --span 1m --output eth_analysis.png
+```
+
+**Available parameters:**
+- `symbol`: Trading symbol (BTC, ETH, LINK, etc.)
+- `--resolution`: Time resolution (1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d)
+- `--span`: Time span (1h, 4h, 12h, 1d, 1w, 2w, 1m, 2m, 4m, 6m, 1y, 2y, 5y)
+- `--save`: Save chart to file instead of displaying
+- `--output`: Custom output file path
+
+**Programmatic usage:**
+```python
+from datetime import datetime
+from coinbot_backend.services.bitvavo_client import get_bitvavo_client
+from coinbot_backend.services.technical_analysis_plot import plot_technical_analysis
+
+client = get_bitvavo_client()
+candles = client.get_candles("BTC", "1h", "2w")
+
+# Show interactive plot
+plot_technical_analysis(candles, show=True)
+
+# Save to file
+plot_technical_analysis(candles, save_path="btc_analysis.png")
+
+# Mark buy datetime with green vertical line
+buy_time = datetime(2026, 1, 1, 12, 0)
+plot_technical_analysis(candles, buy_datetime=buy_time, show=True)
+
+# Get PNG bytes for S3 upload
+chart_bytes = plot_technical_analysis(candles, return_bytes=True)
+```
+
+This tool is invaluable for:
+- Understanding why the bot made buy/sell decisions
+- Debugging strategy behavior
+- Manual verification of trading signals
+- Analyzing market conditions before trading
 
 ### Testing
 
@@ -560,9 +636,11 @@ curl "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{}'
 ### Monitoring
 
 - **CloudWatch Logs**: `/aws/lambda/coinbot`
-- **S3 Logs**: `s3://your-bucket/logs/bot_YYYYMMDD_HHMMSS.log`
+- **S3 Run Folders**: `s3://your-bucket/runs/YYYYMMDD_HHMM/`
+  - Application logs: `s3://your-bucket/runs/YYYYMMDD_HHMM/logs.txt`
+  - Technical analysis charts: `s3://your-bucket/runs/YYYYMMDD_HHMM/[H|S|B|X]_SYMBOL.png`
 - **S3 Positions**: `s3://your-bucket/positions.json`
-- **S3 Trades**: `s3://your-bucket/trades.log.json`
+- **S3 Trades**: `s3://your-bucket/trades.json`
 
 ### Common Issues and Solutions
 

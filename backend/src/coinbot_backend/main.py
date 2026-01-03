@@ -12,9 +12,7 @@ from coinbot_backend.models.trading import OpenPosition, Signal
 from coinbot_backend.services.bitvavo_client import get_bitvavo_client
 from coinbot_backend.services.s3_storage import get_s3_storage
 from coinbot_backend.services.trading_strategies import strategy_multi_confluence
-
-
-logger = setup_logging(__name__)
+from coinbot_backend.services.technical_analysis_plot import plot_technical_analysis
 
 
 class TradingBot:
@@ -31,18 +29,35 @@ class TradingBot:
         self.s3_storage = get_s3_storage()
         self.positions: dict[str, OpenPosition] = {}
         self.iteration_number = 0
+        self.run_folder: str | None = None  # Will be set in run()
+        self.charts_to_upload: dict[str, bytes] = {}  # Charts pending upload
+        self.logger = None  # Will be initialized in run()
 
         # Load existing positions from S3 if exists (silently, will log after banner)
         self._load_positions(silent=True)
 
 
-    def run(self) -> None:
-        """Run one iteration of the trading bot."""
-        logger.info(f"Bot iteration {self.iteration_number} started at {datetime.now()}")
+    def run(self, run_name: str | None = None) -> None:
+        """
+        Run one iteration of the trading bot.
+
+        Args:
+            run_name: Optional run name (YYYYMMDD_HHMM format).
+                     If None, generates from current timestamp.
+        """
+        # Create run folder
+        if run_name is None:
+            run_name = datetime.now().strftime("%Y%m%d_%H%M")
+        self.run_folder = f"{settings.s3_run_key_prefix}{run_name}/"
+
+        # Initialize logger with run folder
+        self.logger = setup_logging(__name__, run_folder=self.run_folder)
+        self.logger.info(f"Bot iteration started at {datetime.now()}")
+        self.logger.info(f"Run folder: s3://{settings.s3_bucket_name}/{self.run_folder}")
 
         # Get current state
         balance = self.get_account_balance()
-        logger.info(f"Available funds: {balance['available_funds']:.2f} EUR")
+        self.logger.info(f"Available funds: {balance['available_funds']:.2f} EUR")
 
         # Update positions
         self.get_current_positions()
@@ -53,7 +68,11 @@ class TradingBot:
         # Look for new opportunities
         self.open_new_positions(settings.bot_num_positions)
 
-        logger.info(f"Iteration complete. Open positions: {len(self.positions)}")
+        # Upload all charts to S3
+        self._upload_all_charts()
+
+        self.logger.info(f"Iteration complete. Open positions: {len(self.positions)}")
+        self.logger.info(f"Run completed: s3://{settings.s3_bucket_name}/{self.run_folder}")
         self.iteration_number += 1
 
     def get_account_balance(self) -> dict[str, float]:
@@ -77,7 +96,7 @@ class TradingBot:
         # Remove positions that are no longer owned
         symbols_to_remove = [s for s in self.positions.keys() if s not in owned_symbols]
         for symbol in symbols_to_remove:
-            logger.info(f"Position {symbol} no longer owned, removing from tracking")
+            self.logger.info(f"Position {symbol} no longer owned, removing from tracking")
             del self.positions[symbol]
 
         # Add new positions that aren't tracked yet (from previous sessions or manual trades)
@@ -85,7 +104,7 @@ class TradingBot:
             if symbol not in self.positions:
                 amount = self.client.get_symbol_owned_amount(symbol)
                 price = self.client.get_symbol_price(symbol)
-                logger.warning(f"Found untracked position {symbol}, adding with estimated data")
+                self.logger.warning(f"Found untracked position {symbol}, adding with estimated data")
                 self.positions[symbol] = OpenPosition(
                     symbol=symbol,
                     buy_datetime=datetime.now(),
@@ -114,7 +133,7 @@ class TradingBot:
             )
 
             if len(candles.timestamps) < settings.bot_min_candles_required:
-                logger.warning(f"Insufficient data for advanced strategies on {symbol}")
+                self.logger.warning(f"Insufficient data for advanced strategies on {symbol}")
                 return Signal.HOLD, 0.5, "Insufficient historical data"
 
             confluence = strategy_multi_confluence(candles)
@@ -122,15 +141,15 @@ class TradingBot:
             return confluence.signal, confluence.confidence, confluence.reason
 
         except Exception as e:
-            logger.error(f"Failed to analyze {symbol} with strategies: {e}")
+            self.logger.error(f"Failed to analyze {symbol} with strategies: {e}")
             return Signal.HOLD, 0.5, f"Analysis error: {str(e)}"
 
     def evaluate_existing_positions(self) -> None:
         """Evaluate all existing positions and decide whether to hold or sell."""
-        logger.info(f"Evaluating {len(self.positions)} existing positions...")
+        self.logger.info(f"Evaluating {len(self.positions)} existing positions...")
 
         for symbol, position in list(self.positions.items()):
-            logger.info(f"Analyzing {symbol} (held since {position.buy_datetime})")
+            self.logger.info(f"Analyzing {symbol} (held since {position.buy_datetime})")
 
             # Get current price
             current_price = self.client.get_symbol_price(symbol)
@@ -138,14 +157,32 @@ class TradingBot:
             # Update ATH
             new_ath = max(position.ath, current_price)
 
+            # Fetch candles for analysis and charting
+            try:
+                candles = self.client.get_candles(
+                    symbol,
+                    settings.bot_analysis_time_resolution,
+                    settings.bot_analysis_time_span
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to fetch candles for {symbol}: {e}")
+                continue
+
             # Check trailing stop-loss (safety mechanism - highest priority)
             stop_loss_threshold = new_ath * (1 - settings.bot_trailing_stop_loss_pct / 100)
             if current_price < stop_loss_threshold:
                 drop_from_ath_pct = ((new_ath - current_price) / new_ath) * 100
-                logger.warning(
+                self.logger.warning(
                     f"TRAILING STOP-LOSS triggered for {symbol}: "
                     f"price {current_price:.2f} dropped {drop_from_ath_pct:.1f}% from ATH {new_ath:.2f}"
                 )
+                # Generate S_ chart before selling
+                try:
+                    chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
+                    self._add_chart(symbol, "S", chart_bytes)
+                except Exception as e:
+                    self.logger.error(f"Failed to generate chart for {symbol}: {e}")
+
                 self.sell_position(
                     symbol,
                     f"Trailing stop-loss: {drop_from_ath_pct:.1f}% drop from ATH {new_ath:.2f}"
@@ -153,27 +190,51 @@ class TradingBot:
                 continue
 
             # Multi-strategy confluence analysis
-            signal, confidence, reason = self.analyze_position_with_strategies(symbol)
+            if len(candles.timestamps) < settings.bot_min_candles_required:
+                self.logger.warning(f"Insufficient data for {symbol}, holding by default")
+                signal, confidence, reason = Signal.HOLD, 0.5, "Insufficient historical data"
+            else:
+                confluence = strategy_multi_confluence(candles)
+                signal, confidence, reason = confluence.signal, confluence.confidence, confluence.reason
 
             # Sell if strategies indicate exit with sufficient confidence
             if signal in [Signal.SELL, Signal.STRONG_SELL] and confidence >= settings.bot_exit_min_confidence:
-                logger.info(f"Strategy SELL signal for {symbol}: {reason} (confidence: {confidence:.0%})")
+                self.logger.info(f"Strategy SELL signal for {symbol}: {reason} (confidence: {confidence:.0%})")
+                # Generate S_ chart before selling
+                try:
+                    chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
+                    self._add_chart(symbol, "S", chart_bytes)
+                except Exception as e:
+                    self.logger.error(f"Failed to generate chart for {symbol}: {e}")
+
                 self.sell_position(symbol, f"{reason} (conf: {confidence:.0%})")
                 continue
+
+            # Holding the position - generate H_ chart with buy marker
+            try:
+                chart_bytes = plot_technical_analysis(
+                    candles,
+                    symbol=symbol,
+                    buy_datetime=position.buy_datetime,
+                    return_bytes=True
+                )
+                self._add_chart(symbol, "H", chart_bytes)
+            except Exception as e:
+                self.logger.error(f"Failed to generate chart for {symbol}: {e}")
 
             # Update ATH if new high reached
             if new_ath > position.ath:
                 position.ath = new_ath
                 self._save_positions()
-                logger.info(f"{symbol} HOLDING - {reason} (ATH updated to {new_ath:.2f}, conf: {confidence:.0%})")
+                self.logger.info(f"{symbol} HOLDING - {reason} (ATH updated to {new_ath:.2f}, conf: {confidence:.0%})")
             else:
-                logger.info(f"{symbol} HOLDING - {reason} (conf: {confidence:.0%})")
+                self.logger.info(f"{symbol} HOLDING - {reason} (conf: {confidence:.0%})")
 
     def sell_position(self, symbol: str, reason: str) -> bool:
         """Sell a position and log the trade."""
         try:
             if symbol not in self.positions:
-                logger.error(f"Cannot sell {symbol}: position not tracked")
+                self.logger.error(f"Cannot sell {symbol}: position not tracked")
                 return False
 
             position = self.positions[symbol]
@@ -183,7 +244,7 @@ class TradingBot:
             response = self.client.sell(symbol, amount)
 
             if "error" in response:
-                logger.error(f"Failed to sell {symbol}: {response['error']}")
+                self.logger.error(f"Failed to sell {symbol}: {response['error']}")
                 return False
 
             # Calculate actual execution price and profit/loss
@@ -194,7 +255,7 @@ class TradingBot:
             profit_loss = sell_value - sell_fee - position.total_cost
             profit_loss_pct = (profit_loss / position.total_cost) * 100
 
-            logger.info(
+            self.logger.info(
                 f"SOLD {symbol}: {filled_amount} @ {actual_sell_price:.2f} EUR/coin "
                 f"(P/L: {profit_loss:+.2f} EUR / {profit_loss_pct:+.2f}%)"
             )
@@ -220,7 +281,7 @@ class TradingBot:
             return True
 
         except Exception as e:
-            logger.error(f"Error selling {symbol}: {e}")
+            self.logger.error(f"Error selling {symbol}: {e}")
             return False
 
     # Buying
@@ -235,15 +296,16 @@ class TradingBot:
         positions_to_open = max_positions - current_positions
 
         if positions_to_open <= 0:
-            logger.info(f"Already at max positions ({current_positions}/{max_positions})")
+            self.logger.info(f"Already at max positions ({current_positions}/{max_positions})")
             return []
 
-        logger.info(f"Looking for {positions_to_open} new opportunities...")
+        self.logger.info(f"Looking for {positions_to_open} new opportunities...")
 
         # Step 1: Pre-filter symbols by growth and volume
-        logger.info("Filtering symbols by 24h growth > 0% and volume >= €{:,.0f}...".format(
-            settings.bot_volume_limit
-        ))
+        self.logger.info(
+            f"Filtering symbols by 24h growth > {settings.bot_min_growth_24h}% "
+            f"and volume >= {settings.bot_volume_limit:,.0f} euro..."
+        )
 
         candidates: list[tuple[str, float, float]] = []  # (symbol, growth_24h, volume_24h)
         available_symbols = self.client.get_available_symbols()
@@ -259,9 +321,9 @@ class TradingBot:
                 continue
 
             try:
-                # Pre-filter: Check 24h growth (must be positive)
+                # Pre-filter: Check 24h growth (configurable threshold)
                 growth_24h = self.client.get_symbol_24h_percentual_change(symbol)
-                if growth_24h <= 0:
+                if growth_24h < settings.bot_min_growth_24h:
                     continue
 
                 # Pre-filter: Check volume (must meet minimum threshold)
@@ -272,40 +334,55 @@ class TradingBot:
                 candidates.append((symbol, growth_24h, volume_24h))
 
             except Exception as e:
-                logger.debug(f"Skipping {symbol}: {e}")
+                self.logger.debug(f"Skipping {symbol}: {e}")
 
-        logger.info(f"Pre-filtered to {len(candidates)} candidate(s) with positive growth and sufficient volume")
-        logger.info(f"  Candidates: {[symbol for symbol, _, _ in candidates]}")
+        self.logger.info(f"Pre-filtered to {len(candidates)} candidate(s) with positive growth and sufficient volume")
+        self.logger.debug(f"  Candidates: {[symbol for symbol, _, _ in candidates]}")
 
         if not candidates:
-            logger.info("No symbols passed pre-filtering criteria")
+            self.logger.info("No symbols passed pre-filtering criteria")
             return []
 
         # Step 2: Sort by 24h growth (integer %), then volume
         candidates.sort(key=lambda x: (int(x[1]), x[2]), reverse=True)
 
-        logger.info(f"Analyzing top candidates (sorted by growth and volume)...")
+        self.logger.info(f"Analyzing top candidates (sorted by growth and volume)...")
 
         # Step 3: Analyze candidates in order until we have enough positions
         opportunities: list[tuple[str, str, float, float]] = []
+        rejected_symbols: list[tuple[str, Any]] = []  # (symbol, candles) for X_ charts
 
         for symbol, growth_24h, volume_24h in candidates:
             # Early exit if we already have enough opportunities
             if len(opportunities) >= positions_to_open:
-                logger.info(f"Found {positions_to_open} opportunities, stopping analysis early")
+                self.logger.info(f"Found {positions_to_open} opportunities, stopping analysis early")
                 break
 
             try:
+                # Fetch candles for analysis and potential chart generation
+                candles = self.client.get_candles(
+                    symbol,
+                    settings.bot_analysis_time_resolution,
+                    settings.bot_analysis_time_span
+                )
+
                 # Multi-strategy confluence analysis
-                signal, confidence, reason = self.analyze_position_with_strategies(symbol)
+                if len(candles.timestamps) < settings.bot_min_candles_required:
+                    self.logger.warning(f"Insufficient data for {symbol}, skipping")
+                    continue
+
+                confluence = strategy_multi_confluence(candles)
+                signal, confidence, reason = confluence.signal, confluence.confidence, confluence.reason
 
                 # Only consider BUY signals with sufficient confidence
                 if signal not in [Signal.BUY, Signal.STRONG_BUY]:
-                    logger.debug(f"{symbol}: {signal.value} signal (not buying)")
+                    self.logger.debug(f"{symbol}: {signal.value} signal (not buying)")
+                    rejected_symbols.append((symbol, candles))
                     continue
 
                 if confidence < settings.bot_entry_min_confidence:
-                    logger.debug(f"{symbol}: {confidence:.0%} confidence (below {settings.bot_entry_min_confidence:.0%} threshold)")
+                    self.logger.debug(f"{symbol}: {confidence:.0%} confidence (below {settings.bot_entry_min_confidence:.0%} threshold)")
+                    rejected_symbols.append((symbol, candles))
                     continue
 
                 full_reason = (
@@ -314,18 +391,28 @@ class TradingBot:
                 )
                 opportunities.append((symbol, full_reason, volume_24h, confidence))
 
-                logger.info(f"Opportunity {len(opportunities)}/{positions_to_open}: {symbol} - {confidence:.0%} confidence, +{growth_24h:.1f}% growth")
+                self.logger.info(f"Opportunity {len(opportunities)}/{positions_to_open}: {symbol} - {confidence:.0%} confidence, +{growth_24h:.1f}% growth")
 
             except Exception as e:
-                logger.debug(f"Error analyzing {symbol}: {e}")
+                self.logger.debug(f"Error analyzing {symbol}: {e}")
+
+        # Generate X_ charts for rejected symbols
+        if rejected_symbols:
+            self.logger.info(f"Generating charts for {len(rejected_symbols)} rejected symbol(s)...")
+            for symbol, candles in rejected_symbols:
+                try:
+                    chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
+                    self._add_chart(symbol, "X", chart_bytes)
+                except Exception as e:
+                    self.logger.error(f"Failed to generate chart for rejected {symbol}: {e}")
 
         # Log final results
         if opportunities:
-            logger.info(f"Selected {len(opportunities)} opportunity/ies:")
+            self.logger.info(f"Selected {len(opportunities)} opportunity/ies:")
             for i, (sym, reason, vol, conf) in enumerate(opportunities, 1):
-                logger.info(f"  {i}. {sym}: {conf:.0%} confidence, €{vol:,.0f} volume")
+                self.logger.info(f"  {i}. {sym}: {conf:.0%} confidence, €{vol:,.0f} volume")
         else:
-            logger.info("No opportunities found matching entry criteria (signal + confidence)")
+            self.logger.info("No opportunities found matching entry criteria (signal + confidence)")
 
         return [(sym, reason) for sym, reason, _, _ in opportunities]
 
@@ -345,7 +432,7 @@ class TradingBot:
             return
 
         if tradeable < min_per_position * positions_to_open:
-            logger.warning(
+            self.logger.warning(
                 f"Insufficient funds to open {positions_to_open} positions "
                 f"({tradeable:.2f} EUR available, need {min_per_position * positions_to_open:.2f} EUR)"
             )
@@ -355,13 +442,12 @@ class TradingBot:
         opportunities = self.find_opportunities(max_positions)
 
         if not opportunities:
-            logger.info("No opportunities found")
             return
 
         # Calculate amount per position
         amount_per_position = tradeable / len(opportunities)
 
-        logger.info(
+        self.logger.info(
             f"Using {settings.bot_max_allocation_percent}% of available funds ({tradeable:.2f} EUR) "
             f"to open {len(opportunities)} positions with {amount_per_position:.2f} EUR each"
         )
@@ -374,11 +460,23 @@ class TradingBot:
     def buy_symbol(self, symbol: str, amount_eur: float, reason: str) -> bool:
         """Buy a symbol and track the position."""
         try:
+            # Generate B_ chart before buying
+            try:
+                candles = self.client.get_candles(
+                    symbol,
+                    settings.bot_analysis_time_resolution,
+                    settings.bot_analysis_time_span
+                )
+                chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
+                self._add_chart(symbol, "B", chart_bytes)
+            except Exception as e:
+                self.logger.error(f"Failed to generate chart for {symbol}: {e}")
+
             # Execute buy order
             response = self.client.buy(symbol, amount_eur)
 
             if "error" in response:
-                logger.error(f"Failed to buy {symbol}: {response['error']}")
+                self.logger.error(f"Failed to buy {symbol}: {response['error']}")
                 return False
 
             # Track the position
@@ -400,7 +498,7 @@ class TradingBot:
             self.positions[symbol] = position
             self._save_positions()
 
-            logger.info(
+            self.logger.info(
                 f"BOUGHT {symbol}: {filled_amount} @ {buy_price:.2f} EUR/coin "
                 f"(total: {filled_quote:.2f} EUR + {fee:.2f} fee)"
             )
@@ -417,7 +515,7 @@ class TradingBot:
             return True
 
         except Exception as e:
-            logger.error(f"Error buying {symbol}: {e}")
+            self.logger.error(f"Error buying {symbol}: {e}")
             return False
 
     # Private helpers
@@ -431,14 +529,14 @@ class TradingBot:
                     for symbol, pos_data in data.items()
                 }
                 if not silent:
-                    logger.info(f"Loaded {len(self.positions)} existing positions from S3 ({settings.s3_positions_key})")
+                    self.logger.info(f"Loaded {len(self.positions)} existing positions from S3 ({settings.s3_positions_key})")
             else:
                 self.positions = {}
                 if not silent:
-                    logger.info("No existing positions found in S3")
+                    self.logger.info("No existing positions found in S3")
         except Exception as e:
             if not silent:
-                logger.error(f"Failed to load positions from S3: {e}")
+                self.logger.error(f"Failed to load positions from S3: {e}")
             self.positions = {}
 
     def _save_positions(self) -> None:
@@ -450,11 +548,11 @@ class TradingBot:
             }
             success = self.s3_storage.upload_json(settings.s3_positions_key, data)
             if success:
-                logger.info(f"Saved {len(self.positions)} positions to S3 ({settings.s3_positions_key})")
+                self.logger.info(f"Saved {len(self.positions)} positions to S3 ({settings.s3_positions_key})")
             else:
-                logger.error("Failed to save positions to S3")
+                self.logger.error("Failed to save positions to S3")
         except Exception as e:
-            logger.error(f"Failed to save positions to S3: {e}")
+            self.logger.error(f"Failed to save positions to S3: {e}")
 
     def _log_trade(self, action: str, symbol: str, details: dict[str, Any]) -> None:
         """Log a trade to S3."""
@@ -477,11 +575,63 @@ class TradingBot:
             # Upload back to S3
             success = self.s3_storage.upload_json(settings.s3_trades_key, logs)
             if success:
-                logger.info(f"Logged {action} trade for {symbol} to S3")
+                self.logger.info(f"Logged {action} trade for {symbol} to S3")
             else:
-                logger.error(f"Failed to log {action} trade for {symbol} to S3")
+                self.logger.error(f"Failed to log {action} trade for {symbol} to S3")
         except Exception as e:
-            logger.error(f"Failed to log trade to S3: {e}")
+            self.logger.error(f"Failed to log trade to S3: {e}")
+
+    def _add_chart(self, symbol: str, prefix: str, chart_bytes: bytes) -> None:
+        """
+        Add a chart to the upload queue.
+
+        Args:
+            symbol: Trading symbol
+            prefix: Chart type prefix (H, S, B, X)
+            chart_bytes: PNG image bytes
+        """
+        chart_key = f"{prefix}_{symbol}.png"
+        self.charts_to_upload[chart_key] = chart_bytes
+        self.logger.debug(f"Queued chart for upload: {chart_key}")
+
+    def _upload_all_charts(self) -> None:
+        """Upload all queued charts to S3."""
+        if not self.charts_to_upload:
+            return
+
+        total_charts = len(self.charts_to_upload)
+        uploaded = 0
+        failed = 0
+
+        # Upload with progress bar
+        for chart_filename, chart_bytes in tqdm(
+            self.charts_to_upload.items(),
+            desc="Uploading charts",
+            unit="chart",
+            leave=False,
+        ):
+            chart_key = f"{self.run_folder}{chart_filename}"
+            try:
+                success = self.s3_storage.upload_chart(chart_key, chart_bytes)
+                if success:
+                    uploaded += 1
+                else:
+                    failed += 1
+                    self.logger.error(f"Failed to upload {chart_filename}")
+            except Exception as e:
+                failed += 1
+                self.logger.error(f"Error uploading {chart_filename}: {e}")
+
+        # Log summary
+        self.logger.info(
+            f"Uploaded {uploaded}/{total_charts} technical analysis charts to S3: "
+            f"s3://{self.s3_storage.bucket_name}/{self.run_folder}"
+        )
+        if failed > 0:
+            self.logger.warning(f"{failed} chart(s) failed to upload")
+
+        # Clear the queue
+        self.charts_to_upload.clear()
 
 
 def main() -> None:

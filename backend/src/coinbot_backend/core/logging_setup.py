@@ -1,7 +1,6 @@
 """Logging configuration for the trading bot application."""
 
 import logging
-from datetime import datetime
 
 from coinbot_backend.config import settings
 from coinbot_backend.services.s3_storage import S3LogHandler, get_s3_storage
@@ -18,12 +17,14 @@ class ShortNameFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(logger_name: str | None = None) -> logging.Logger:
+def setup_logging(logger_name: str | None = None, run_folder: str | None = None) -> logging.Logger:
     """
     Configure logging to output to console, rotating file, and S3.
 
     Args:
         logger_name: Name for the logger. If None, uses the calling module's name.
+        run_folder: Run folder path for S3 logs (e.g., "runs/20260103_1010/").
+                   If None, generates timestamp-based folder.
 
     Returns:
         Configured logger instance.
@@ -47,10 +48,7 @@ def setup_logging(logger_name: str | None = None) -> logging.Logger:
 
     # S3 handler (upload logs to S3)
     if settings.s3_enable_log_upload:
-        # Generate unique log filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_key = f"{settings.s3_log_key_prefix}bot_{timestamp}.log"
-
+        log_key = f"{run_folder}logs.txt"
         s3_storage = get_s3_storage()
         s3_handler = S3LogHandler(
             s3_storage=s3_storage,
@@ -61,6 +59,6 @@ def setup_logging(logger_name: str | None = None) -> logging.Logger:
         s3_handler.setFormatter(ShortNameFormatter(log_format))
         logger.addHandler(s3_handler)
 
-        logger.info(f"S3 logging enabled: s3://{settings.s3_bucket_name}/{log_key}")
+        logger.debug(f"S3 logging enabled: s3://{settings.s3_bucket_name}/{log_key}")
 
     return logger

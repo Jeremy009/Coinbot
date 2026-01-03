@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     aws_region: str = "eu-central-1"  # AWS region for S3 bucket
     s3_bucket_name: str = "coinbot-eu-central-1"  # S3 bucket name for storing bot data
     s3_positions_key: str = "positions.json"  # S3 key for positions file
-    s3_trades_key: str = "trades.log.json"  # S3 key for trades log file
+    s3_trades_key: str = "trades.json"  # S3 key for trades file
     s3_enable_log_upload: bool = True  # Enable uploading logs to S3
-    s3_log_key_prefix: str = "logs/"  # S3 key prefix for log files
+    s3_run_key_prefix: str = "runs/"  # S3 key prefix for run folders (logs + charts)
     s3_log_buffer_size: int = 50  # Number of log records to buffer before uploading
 
     # Generic Bot Configuration
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     bot_max_allocation_percent: float = 5.0  # % of available funds to use for trading
     bot_min_position_size: float = 5.0  # Minimum amount tradeable in euro
     bot_volume_limit: int = 500000  # Don't do trades on symbols with small 24h volume
+    bot_min_growth_24h: float = -10.0  # Minimum 24h growth % (negative allows dips for mean reversion)
     bot_trailing_stop_loss_pct: float = 8.0  # Sell if price drops this % from ATH since purchase
 
     # Strategy Configuration

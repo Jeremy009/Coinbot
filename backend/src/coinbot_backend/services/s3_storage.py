@@ -112,6 +112,32 @@ class S3StorageService:
             logger.error(f"Failed to upload {key} to S3: {e}")
             return False
 
+    def upload_chart(self, key: str, chart_bytes: bytes) -> bool:
+        """
+        Upload chart image bytes to S3.
+
+        Args:
+            key: S3 object key (filename, should end with .png)
+            chart_bytes: PNG image bytes
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            size_kb = len(chart_bytes) / 1024
+
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=chart_bytes,
+                ContentType="image/png",
+            )
+            logger.debug(f"Uploaded chart {key} to S3 ({size_kb:.1f} KB)")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to upload chart {key} to S3: {e}")
+            return False
+
     def append_text(self, key: str, text: str) -> bool:
         """
         Append text to an existing S3 file (downloads, appends, re-uploads).

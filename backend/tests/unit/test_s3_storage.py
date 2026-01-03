@@ -149,6 +149,49 @@ class TestS3StorageIntegration:
         # 9. Assert file is gone
         assert storage.file_exists(test_key) is False
 
+    def test_upload_chart_cycle(self):
+        """Test chart (PNG bytes) upload, download, and delete lifecycle."""
+        storage = get_s3_storage()
+        test_key = "unit_test_chart.png"
+
+        # 1. Assert file doesn't exist
+        assert storage.file_exists(test_key) is False, (
+            f"Test file {test_key} already exists in S3! "
+            "Previous test run did not clean up properly."
+        )
+
+        # 2. Create fake PNG bytes (simulated chart data)
+        # Real PNG header followed by some test data with UUID
+        test_uuid = str(uuid.uuid4())
+        # PNG magic number: 89 50 4E 47 0D 0A 1A 0A
+        fake_png_header = b'\x89PNG\r\n\x1a\n'
+        fake_png_data = fake_png_header + test_uuid.encode('utf-8') + b'\x00' * 100
+
+        # 3. Upload chart to S3
+        upload_success = storage.upload_chart(test_key, fake_png_data)
+        assert upload_success is True
+
+        # 4. Check file exists
+        assert storage.file_exists(test_key) is True
+
+        # 5. Download and verify (using S3 client directly)
+        response = storage.s3_client.get_object(Bucket=storage.bucket_name, Key=test_key)
+        downloaded_data = response["Body"].read()
+
+        # 6. Verify contents match
+        assert downloaded_data == fake_png_data
+        assert test_uuid.encode('utf-8') in downloaded_data
+        assert downloaded_data.startswith(fake_png_header)
+
+        # 7. Verify content type is set correctly
+        assert response['ContentType'] == 'image/png'
+
+        # 8. Delete from S3
+        storage.s3_client.delete_object(Bucket=storage.bucket_name, Key=test_key)
+
+        # 9. Assert file is gone
+        assert storage.file_exists(test_key) is False
+
 
 class TestS3StorageErrorHandling:
     """Test S3 error handling when operations fail."""
@@ -211,6 +254,24 @@ class TestS3StorageErrorHandling:
         storage.bucket_name = "nonexistent-bucket-12345-xyz"
 
         result = storage.append_text("test.log", "log line\n")
+
+        # Should return False on error
+        assert result is False
+
+        # Restore original bucket
+        storage.bucket_name = original_bucket
+
+    def test_upload_chart_with_invalid_bucket(self):
+        """Test upload_chart returns False when bucket doesn't exist."""
+        storage = get_s3_storage()
+
+        # Temporarily use invalid bucket
+        original_bucket = storage.bucket_name
+        storage.bucket_name = "nonexistent-bucket-12345-xyz"
+
+        # Create fake PNG bytes
+        fake_png_data = b'\x89PNG\r\n\x1a\n' + b'test chart data'
+        result = storage.upload_chart("test.png", fake_png_data)
 
         # Should return False on error
         assert result is False
