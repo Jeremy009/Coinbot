@@ -6,6 +6,8 @@ import traceback
 from typing import Any
 
 from coinbot_backend import __version__
+from coinbot_backend.config import settings
+
 
 # Set up logging
 logger = logging.getLogger()
@@ -39,7 +41,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # Run one iteration of the bot
         main()
 
-        logger.info("Bot iteration completed successfully")
+        logger.info(f"Bot iteration completed successfully using coinbot V{__version__}")
 
         return {
             "statusCode": 200,

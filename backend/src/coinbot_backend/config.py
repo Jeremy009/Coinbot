@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "Coinbot"
     app_version: str = __version__
     log_level: str = "INFO"
+    show_loading_bars: bool = True
 
     # Bitvavo API
     bitvavo_api_key: str = ""
@@ -22,8 +23,8 @@ class Settings(BaseSettings):
     bitvavo_access_window: int = 10000
 
     # AWS S3 Storage
-    aws_access_key_id: str = ""  # AWS access key ID for S3
-    aws_secret_access_key: str = ""  # AWS secret access key for S3
+    # Note: AWS credentials are handled automatically via boto3's credential chain
+    # (AWS CLI config, environment variables, IAM roles, etc.)
     aws_region: str = "eu-central-1"  # AWS region for S3 bucket
     s3_bucket_name: str = "coinbot-eu-central-1"  # S3 bucket name for storing bot data
     s3_positions_key: str = "positions.json"  # S3 key for positions file
@@ -40,7 +41,7 @@ class Settings(BaseSettings):
     bot_num_positions: int = 5  # Max number of open positions at any time
     bot_max_allocation_percent: float = 5.0  # % of available funds to use for trading
     bot_min_position_size: float = 5.0  # Minimum amount tradeable in euro
-    bot_volume_limit: int = 500000  # Don't do trades on symbols with small 24h volume
+    bot_volume_limit: int = 1000000  # Don't do trades on symbols with small 24h volume
     bot_min_growth_24h: float = -10.0  # Minimum 24h growth % (negative allows dips for mean reversion)
     bot_trailing_stop_loss_pct: float = 8.0  # Sell if price drops this % from ATH since purchase
 

@@ -17,19 +17,10 @@ class S3StorageService:
 
     def __init__(self) -> None:
         """Initialize S3 client."""
-        # If credentials are provided in settings, use them explicitly
-        # Otherwise, boto3 will use the credential chain (AWS CLI, env vars, IAM role, etc.)
-        if settings.aws_access_key_id and settings.aws_secret_access_key:
-            self.s3_client = boto3.client(
-                "s3",
-                aws_access_key_id=settings.aws_access_key_id,
-                aws_secret_access_key=settings.aws_secret_access_key,
-                region_name=settings.aws_region,
-            )
-        else:
-            # Use AWS credential chain (CLI config, env vars, IAM role)
-            self.s3_client = boto3.client("s3", region_name=settings.aws_region)
-
+        # Always use AWS credential chain (AWS CLI, env vars, IAM role, etc.)
+        # This automatically handles temporary credentials (session tokens) from IAM roles
+        # Do NOT pass explicit credentials - it breaks Lambda's IAM role credentials
+        self.s3_client = boto3.client("s3", region_name=settings.aws_region)
         self.bucket_name = settings.s3_bucket_name
 
     def upload_json(self, key: str, data: dict[str, Any] | list[Any]) -> bool:

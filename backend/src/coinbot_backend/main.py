@@ -315,7 +315,8 @@ class TradingBot:
             available_symbols,
             desc="Pre-filtering symbols",
             unit="symbol",
-            leave=False
+            leave=False,
+            disable=(not settings.show_loading_bars)
         ):
             # Skip if already owned or is EUR
             if symbol in self.positions or symbol == "EUR":
@@ -610,6 +611,7 @@ class TradingBot:
             desc="Uploading charts",
             unit="chart",
             leave=False,
+            disable=(not settings.show_loading_bars)
         ):
             chart_key = f"{self.run_folder}{chart_filename}"
             try:
