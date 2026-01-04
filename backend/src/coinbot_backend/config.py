@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "Coinbot"
     app_version: str = __version__
     log_level: str = "INFO"
-    show_loading_bars: bool = True
+    show_loading_bars: bool = False
 
     # Bitvavo API
     bitvavo_api_key: str = ""

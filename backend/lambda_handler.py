@@ -66,3 +66,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "request_id": request_id
             })
         }
+
+    finally:
+        # Ensure all log handlers flush their buffers to S3 before Lambda terminates
+        # Without this, buffered logs in S3LogHandler will be lost
+        logging.shutdown()

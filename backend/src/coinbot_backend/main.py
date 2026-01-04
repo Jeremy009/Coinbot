@@ -1,6 +1,7 @@
 """Main trading bot application with position tracking and multi-strategy support."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
@@ -12,8 +13,8 @@ from coinbot_backend.core.logging_setup import setup_logging
 from coinbot_backend.models.trading import OpenPosition, Signal
 from coinbot_backend.services.bitvavo_client import get_bitvavo_client
 from coinbot_backend.services.s3_storage import get_s3_storage
-from coinbot_backend.services.trading_strategies import strategy_multi_confluence
 from coinbot_backend.services.technical_analysis_plot import plot_technical_analysis
+from coinbot_backend.services.trading_strategies import strategy_multi_confluence
 
 
 class TradingBot:
@@ -286,6 +287,101 @@ class TradingBot:
             return False
 
     # Buying
+    def _check_symbol_filters(self, symbol: str) -> tuple[str, float, float] | None:
+        """ Check if a symbol passes pre-filtering criteria (growth and volume). """
+        # Skip if already owned or is EUR
+        if symbol in self.positions or symbol == "EUR":
+            return None
+
+        try:
+            # Pre-filter: Check 24h growth
+            growth_24h = self.client.get_symbol_24h_percentual_change(symbol)
+            if growth_24h < settings.bot_min_growth_24h:
+                return None
+
+            # Pre-filter: Check volume (must meet minimum threshold)
+            volume_24h = self.client.get_symbol_24h_volume(symbol)
+            if volume_24h < settings.bot_volume_limit:
+                return None
+
+            return (symbol, growth_24h, volume_24h)
+
+        except Exception as e:
+            self.logger.warning(f"Skipping {symbol}: {e}")
+            return None
+
+    def _analyze_symbol_for_opportunity(
+        self, symbol: str, growth_24h: float, volume_24h: float
+    ) -> dict[str, Any]:
+        """
+        Analyze a symbol with technical analysis to determine if it's a buy opportunity.
+
+        Args:
+            symbol: Trading symbol
+            growth_24h: 24-hour percentage change
+            volume_24h: 24-hour trading volume
+
+        Returns:
+            Dictionary with analysis results including 'status', 'reason', 'confidence', etc.
+        """
+        try:
+            # Fetch candles for analysis
+            candles = self.client.get_candles(
+                symbol,
+                settings.bot_analysis_time_resolution,
+                settings.bot_analysis_time_span
+            )
+
+            # Check if we have enough data
+            if len(candles.timestamps) < settings.bot_min_candles_required:
+                return {
+                    "status": "insufficient_data",
+                    "symbol": symbol,
+                    "candles": None,
+                }
+
+            # Run multi-strategy confluence analysis
+            confluence = strategy_multi_confluence(candles)
+            signal, confidence, reason = confluence.signal, confluence.confidence, confluence.reason
+
+            # Check if it's a BUY signal with sufficient confidence
+            if signal not in [Signal.BUY, Signal.STRONG_BUY]:
+                return {
+                    "status": "rejected_signal",
+                    "symbol": symbol,
+                    "signal": signal,
+                    "candles": candles,
+                }
+
+            if confidence < settings.bot_entry_min_confidence:
+                return {
+                    "status": "rejected_confidence",
+                    "symbol": symbol,
+                    "confidence": confidence,
+                    "candles": candles,
+                }
+
+            # It's an opportunity!
+            full_reason = (
+                f"{reason} | 24h: +{growth_24h:.1f}% | "
+                f"Vol: €{volume_24h:,.0f} | Conf: {confidence:.0%}"
+            )
+            return {
+                "status": "opportunity",
+                "symbol": symbol,
+                "reason": full_reason,
+                "volume": volume_24h,
+                "confidence": confidence,
+                "growth_24h": growth_24h,
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "error": str(e),
+            }
+
     def find_opportunities(self, max_positions: int) -> list[tuple[str, str]]:
         """
         Find trading opportunities using multi-strategy confluence analysis.
@@ -302,7 +398,7 @@ class TradingBot:
 
         self.logger.info(f"Looking for {positions_to_open} new opportunities...")
 
-        # Step 1: Pre-filter symbols by growth and volume
+        # Step 1: Pre-filter symbols by growth and volume (parallelized)
         self.logger.info(
             f"Filtering symbols by 24h growth > {settings.bot_min_growth_24h}% "
             f"and volume >= {settings.bot_volume_limit:,.0f} euro..."
@@ -311,32 +407,28 @@ class TradingBot:
         candidates: list[tuple[str, float, float]] = []  # (symbol, growth_24h, volume_24h)
         available_symbols = self.client.get_available_symbols()
 
-        for symbol in tqdm(
-            available_symbols,
-            desc="Pre-filtering symbols",
-            unit="symbol",
-            leave=False,
-            disable=(not settings.show_loading_bars)
-        ):
-            # Skip if already owned or is EUR
-            if symbol in self.positions or symbol == "EUR":
-                continue
+        # Parallelize pre-filtering with ThreadPoolExecutor
+        max_workers = min(32, len(available_symbols))  # Limit to 32 threads max
 
-            try:
-                # Pre-filter: Check 24h growth (configurable threshold)
-                growth_24h = self.client.get_symbol_24h_percentual_change(symbol)
-                if growth_24h < settings.bot_min_growth_24h:
-                    continue
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all symbol checks
+            future_to_symbol = {
+                executor.submit(self._check_symbol_filters, symbol): symbol
+                for symbol in available_symbols
+            }
 
-                # Pre-filter: Check volume (must meet minimum threshold)
-                volume_24h = self.client.get_symbol_24h_volume(symbol)
-                if volume_24h < settings.bot_volume_limit:
-                    continue
-
-                candidates.append((symbol, growth_24h, volume_24h))
-
-            except Exception as e:
-                self.logger.debug(f"Skipping {symbol}: {e}")
+            # Collect results with progress bar
+            for future in tqdm(
+                as_completed(future_to_symbol),
+                total=len(available_symbols),
+                desc="Pre-filtering symbols",
+                unit="symbol",
+                leave=False,
+                disable=(not settings.show_loading_bars)
+            ):
+                result = future.result()
+                if result is not None:
+                    candidates.append(result)
 
         self.logger.info(f"Pre-filtered to {len(candidates)} candidate(s) with positive growth and sufficient volume")
         self.logger.debug(f"  Candidates: {[symbol for symbol, _, _ in candidates]}")
@@ -345,73 +437,106 @@ class TradingBot:
             self.logger.info("No symbols passed pre-filtering criteria")
             return []
 
-        # Step 2: Sort by 24h growth (integer %), then volume
-        candidates.sort(key=lambda x: (int(x[1]), x[2]), reverse=True)
+        # Step 2: Sort by volume and then by growth
+        candidates.sort(key=lambda x: (x[2], x[1]), reverse=True)
 
-        self.logger.info(f"Analyzing top candidates (sorted by growth and volume)...")
+        self.logger.info("Analyzing top candidates (sorted by growth and volume)...")
 
-        # Step 3: Analyze candidates in order until we have enough positions
+        # Step 3: Analyze candidates with technical analysis (parallelized)
         opportunities: list[tuple[str, str, float, float]] = []
         rejected_symbols: list[tuple[str, Any]] = []  # (symbol, candles) for X_ charts
 
-        for symbol, growth_24h, volume_24h in candidates:
-            # Early exit if we already have enough opportunities
-            if len(opportunities) >= positions_to_open:
-                self.logger.info(f"Found {positions_to_open} opportunities, stopping analysis early")
-                break
+        # Parallelize technical analysis with ThreadPoolExecutor
+        max_workers = min(16, len(candidates))  # Limit to 16 threads (analysis is CPU-intensive)
 
-            try:
-                # Fetch candles for analysis and potential chart generation
-                candles = self.client.get_candles(
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all candidate analyses
+            future_to_candidate = {
+                executor.submit(
+                    self._analyze_symbol_for_opportunity,
                     symbol,
-                    settings.bot_analysis_time_resolution,
-                    settings.bot_analysis_time_span
+                    growth_24h,
+                    volume_24h
+                ): (symbol, growth_24h, volume_24h)
+                for symbol, growth_24h, volume_24h in candidates
+            }
+
+            # Collect results with progress bar
+            results = []
+            for future in tqdm(
+                as_completed(future_to_candidate),
+                total=len(candidates),
+                desc="Analyzing candidates",
+                unit="symbol",
+                leave=False,
+                disable=(not settings.show_loading_bars)
+            ):
+                result = future.result()
+                results.append(result)
+
+        # Process results
+        for result in results:
+            status = result["status"]
+            symbol = result["symbol"]
+
+            if status == "opportunity":
+                opportunities.append((
+                    symbol,
+                    result["reason"],
+                    result["volume"],
+                    result["confidence"]
+                ))
+                self.logger.info(
+                    f"Opportunity found: {symbol} - {result['confidence']:.0%} confidence, "
+                    f"+{result['growth_24h']:.1f}% growth"
                 )
 
-                # Multi-strategy confluence analysis
-                if len(candles.timestamps) < settings.bot_min_candles_required:
-                    self.logger.warning(f"Insufficient data for {symbol}, skipping")
-                    continue
+            elif status == "rejected_signal":
+                self.logger.debug(f"{symbol}: {result['signal'].value} signal (not buying)")
+                if result["candles"] is not None:
+                    rejected_symbols.append((symbol, result["candles"]))
 
-                confluence = strategy_multi_confluence(candles)
-                signal, confidence, reason = confluence.signal, confluence.confidence, confluence.reason
-
-                # Only consider BUY signals with sufficient confidence
-                if signal not in [Signal.BUY, Signal.STRONG_BUY]:
-                    self.logger.debug(f"{symbol}: {signal.value} signal (not buying)")
-                    rejected_symbols.append((symbol, candles))
-                    continue
-
-                if confidence < settings.bot_entry_min_confidence:
-                    self.logger.debug(f"{symbol}: {confidence:.0%} confidence (below {settings.bot_entry_min_confidence:.0%} threshold)")
-                    rejected_symbols.append((symbol, candles))
-                    continue
-
-                full_reason = (
-                    f"{reason} | 24h: +{growth_24h:.1f}% | "
-                    f"Vol: €{volume_24h:,.0f} | Conf: {confidence:.0%}"
+            elif status == "rejected_confidence":
+                self.logger.debug(
+                    f"{symbol}: {result['confidence']:.0%} confidence "
+                    f"(below {settings.bot_entry_min_confidence:.0%} threshold)"
                 )
-                opportunities.append((symbol, full_reason, volume_24h, confidence))
+                if result["candles"] is not None:
+                    rejected_symbols.append((symbol, result["candles"]))
 
-                self.logger.info(f"Opportunity {len(opportunities)}/{positions_to_open}: {symbol} - {confidence:.0%} confidence, +{growth_24h:.1f}% growth")
+            elif status == "insufficient_data":
+                self.logger.warning(f"Insufficient data for {symbol}, skipping")
 
-            except Exception as e:
-                self.logger.debug(f"Error analyzing {symbol}: {e}")
+            elif status == "error":
+                self.logger.debug(f"Error analyzing {symbol}: {result['error']}")
 
-        # Generate X_ charts for rejected symbols
+        # Sort opportunities by confidence (descending), then volume
+        opportunities.sort(key=lambda x: (x[3], x[2]), reverse=True)
+
+        # Select top N opportunities
+        opportunities = opportunities[:positions_to_open]
+
+        # Generate X_ charts for rejected symbols (parallelized)
         if rejected_symbols:
             self.logger.info(f"Generating charts for {len(rejected_symbols)} rejected symbol(s)...")
-            for symbol, candles in rejected_symbols:
-                try:
-                    chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
-                    self._add_chart(symbol, "X", chart_bytes)
-                except Exception as e:
-                    self.logger.error(f"Failed to generate chart for rejected {symbol}: {e}")
+
+            with ThreadPoolExecutor(max_workers=min(8, len(rejected_symbols))) as executor:
+                # Submit all chart generation tasks
+                futures = [
+                    executor.submit(self._generate_chart, symbol, candles)
+                    for symbol, candles in rejected_symbols
+                ]
+
+                # Collect results
+                for future in as_completed(futures):
+                    symbol, chart_bytes = future.result()
+                    if chart_bytes is not None:
+                        self._add_chart(symbol, "X", chart_bytes)
 
         # Log final results
         if opportunities:
             self.logger.info(f"Selected {len(opportunities)} opportunity/ies:")
-            for i, (sym, reason, vol, conf) in enumerate(opportunities, 1):
+            for i, (sym, _reason, vol, conf) in enumerate(opportunities, 1):
                 self.logger.info(f"  {i}. {sym}: {conf:.0%} confidence, €{vol:,.0f} volume")
         else:
             self.logger.info("No opportunities found matching entry criteria (signal + confidence)")
@@ -582,6 +707,24 @@ class TradingBot:
                 self.logger.error(f"Failed to log {action} trade for {symbol} to S3")
         except Exception as e:
             self.logger.error(f"Failed to log trade to S3: {e}")
+
+    def _generate_chart(self, symbol: str, candles: Any) -> tuple[str, bytes | None]:
+        """
+        Generate a technical analysis chart for a symbol.
+
+        Args:
+            symbol: Trading symbol
+            candles: OHLCV candles data
+
+        Returns:
+            Tuple of (symbol, chart_bytes) or (symbol, None) if error
+        """
+        try:
+            chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
+            return (symbol, chart_bytes)
+        except Exception as e:
+            self.logger.error(f"Failed to generate chart for {symbol}: {e}")
+            return (symbol, None)
 
     def _add_chart(self, symbol: str, prefix: str, chart_bytes: bytes) -> None:
         """

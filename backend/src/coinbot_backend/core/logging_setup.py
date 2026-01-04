@@ -36,9 +36,13 @@ def setup_logging(logger_name: str | None = None, run_folder: str | None = None)
     logger = logging.getLogger(logger_name) if logger_name else logging.getLogger(__name__)
     logger.setLevel(log_level)
 
-    # Prevent duplicate handlers if this is called multiple times
+    # Clear existing handlers to prevent Lambda warm-start issues
+    # In Lambda, the same container may be reused across invocations with different run_folders
+    # We must recreate handlers to ensure each run logs to its own S3 file
     if logger.handlers:
-        return logger
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
 
     # Console handler (stdout/stderr)
     console_handler = logging.StreamHandler()

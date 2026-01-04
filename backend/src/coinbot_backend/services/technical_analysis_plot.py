@@ -27,6 +27,11 @@ Usage:
 import io
 import numpy as np
 import pandas as pd
+
+# Set non-interactive backend for thread-safe plotting (MUST be before importing pyplot)
+import matplotlib
+matplotlib.use('Agg')
+
 import matplotlib.pyplot as plt
 from datetime import datetime
 from matplotlib.figure import Figure
