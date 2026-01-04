@@ -9,6 +9,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Use plain text for all output and logging
 - Keep all messages professional and text-based
 
+**Docstrings**
+- NEVER use Args:, Returns:, Raises:, or similar sections in docstrings
+- Type annotations already document parameters and return types
+- Write clear, concise descriptions instead
+- Good: `"""Upload JSON data to S3."""`
+- Bad: `"""Upload JSON data to S3.\n\nArgs:\n    key: S3 object key\n    data: Dictionary to serialize\n\nReturns:\n    True if successful""""`
+- If additional context is needed beyond the function signature, include it in the main description
+- Example: `"""Upload JSON data to S3. Returns None if file doesn't exist or error occurs."""`
+
 **Import Organization**
 - Always place imports at the top of the file (module level)
 - Never use inline imports inside functions or methods unless there's a specific reason (circular imports, conditional imports, etc.)

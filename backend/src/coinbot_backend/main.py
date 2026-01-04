@@ -121,12 +121,7 @@ class TradingBot:
         return self.positions
 
     def analyze_position_with_strategies(self, symbol: str) -> tuple[Signal, float, str]:
-        """
-        Analyze a position using the multi-strategy confluence approach.
-
-        Returns:
-            Tuple of (signal, confidence, reason)
-        """
+        """Analyze a position using the multi-strategy confluence approach."""
         try:
             candles = self.client.get_candles(
                 symbol,
@@ -313,17 +308,7 @@ class TradingBot:
     def _analyze_symbol_for_opportunity(
         self, symbol: str, growth_24h: float, volume_24h: float
     ) -> dict[str, Any]:
-        """
-        Analyze a symbol with technical analysis to determine if it's a buy opportunity.
-
-        Args:
-            symbol: Trading symbol
-            growth_24h: 24-hour percentage change
-            volume_24h: 24-hour trading volume
-
-        Returns:
-            Dictionary with analysis results including 'status', 'reason', 'confidence', etc.
-        """
+        """Analyze a symbol with technical analysis to determine if it's a buy opportunity."""
         try:
             # Fetch candles for analysis
             candles = self.client.get_candles(
@@ -383,12 +368,7 @@ class TradingBot:
             }
 
     def find_opportunities(self, max_positions: int) -> list[tuple[str, str]]:
-        """
-        Find trading opportunities using multi-strategy confluence analysis.
-
-        Returns:
-            List of (symbol, reason) tuples
-        """
+        """Find trading opportunities using multi-strategy confluence analysis."""
         current_positions = len(self.positions)
         positions_to_open = max_positions - current_positions
 
@@ -715,16 +695,7 @@ class TradingBot:
             self.logger.error(f"Failed to log trade to S3: {e}")
 
     def _generate_chart(self, symbol: str, candles: Any) -> tuple[str, bytes | None]:
-        """
-        Generate a technical analysis chart for a symbol.
-
-        Args:
-            symbol: Trading symbol
-            candles: OHLCV candles data
-
-        Returns:
-            Tuple of (symbol, chart_bytes) or (symbol, None) if error
-        """
+        """Generate a technical analysis chart for a symbol."""
         try:
             chart_bytes = plot_technical_analysis(candles, symbol=symbol, return_bytes=True)
             return (symbol, chart_bytes)
@@ -733,14 +704,7 @@ class TradingBot:
             return (symbol, None)
 
     def _add_chart(self, symbol: str, prefix: str, chart_bytes: bytes) -> None:
-        """
-        Add a chart to the upload queue.
-
-        Args:
-            symbol: Trading symbol
-            prefix: Chart type prefix (H, S, B, X)
-            chart_bytes: PNG image bytes
-        """
+        """Add a chart to the upload queue."""
         chart_key = f"{prefix}_{symbol}.png"
         self.charts_to_upload[chart_key] = chart_bytes
         self.logger.debug(f"Queued chart for upload: {chart_key}")

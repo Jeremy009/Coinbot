@@ -63,19 +63,8 @@ def plot_technical_analysis(
     """
     Create a comprehensive technical analysis chart with all indicators.
 
-    Args:
-        candles: OHLCVCandles object with price data
-        symbol: Symbol name (optional, extracted from candles if available)
-        buy_datetime: If provided, draws a green vertical line at the buy datetime
-        show: If True, display the plot interactively
-        save_path: If provided, save the plot to this path
-        return_bytes: If True, return PNG bytes instead of Figure object
-        figsize: Figure size in inches (width, height)
-        skip_first_n_candles: Number of candles to skip from the beginning for plotting
-                             (indicators are still calculated on full data for accuracy)
-
-    Returns:
-        Matplotlib Figure object or PNG bytes (if return_bytes=True)
+    Indicators are calculated on full data for accuracy, but skip_first_n_candles are excluded
+    from plotting for cleaner visualization.
     """
     # Extract data
     df = candles.as_dataframe()

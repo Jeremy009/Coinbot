@@ -18,17 +18,7 @@ class ShortNameFormatter(logging.Formatter):
 
 
 def setup_logging(logger_name: str | None = None, run_folder: str | None = None) -> logging.Logger:
-    """
-    Configure logging to output to console, rotating file, and S3.
-
-    Args:
-        logger_name: Name for the logger. If None, uses the calling module's name.
-        run_folder: Run folder path for S3 logs (e.g., "runs/20260103_1010/").
-                   If None, generates timestamp-based folder.
-
-    Returns:
-        Configured logger instance.
-    """
+    """Configure logging to output to console, rotating file, and S3."""
     log_format = "%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s"
     log_level = getattr(logging, settings.log_level.upper())
 

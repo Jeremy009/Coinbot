@@ -24,16 +24,7 @@ class S3StorageService:
         self.bucket_name = settings.s3_bucket_name
 
     def upload_json(self, key: str, data: dict[str, Any] | list[Any]) -> bool:
-        """
-        Upload JSON data to S3.
-
-        Args:
-            key: S3 object key (filename)
-            data: Dictionary or list to serialize as JSON
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Upload JSON data to S3."""
         try:
             json_bytes = json.dumps(data, indent=2, default=str).encode("utf-8")
             size_kb = len(json_bytes) / 1024
@@ -52,15 +43,7 @@ class S3StorageService:
             return False
 
     def download_json(self, key: str) -> dict[str, Any] | list[Any] | None:
-        """
-        Download JSON data from S3.
-
-        Args:
-            key: S3 object key (filename)
-
-        Returns:
-            Parsed JSON data (dict or list), or None if file doesn't exist or error occurs
-        """
+        """Download JSON data from S3. Returns None if file doesn't exist or error occurs."""
         try:
             logger.info(f"Downloading from S3: s3://{self.bucket_name}/{key}")
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
@@ -77,16 +60,7 @@ class S3StorageService:
             return None
 
     def upload_text(self, key: str, text: str) -> bool:
-        """
-        Upload text data to S3.
-
-        Args:
-            key: S3 object key (filename)
-            text: Text content to upload
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Upload text data to S3."""
         try:
             text_bytes = text.encode("utf-8")
             size_kb = len(text_bytes) / 1024
@@ -104,16 +78,7 @@ class S3StorageService:
             return False
 
     def upload_chart(self, key: str, chart_bytes: bytes) -> bool:
-        """
-        Upload chart image bytes to S3.
-
-        Args:
-            key: S3 object key (filename, should end with .png)
-            chart_bytes: PNG image bytes
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Upload chart image bytes to S3."""
         try:
             size_kb = len(chart_bytes) / 1024
 
@@ -130,16 +95,7 @@ class S3StorageService:
             return False
 
     def append_text(self, key: str, text: str) -> bool:
-        """
-        Append text to an existing S3 file (downloads, appends, re-uploads).
-
-        Args:
-            key: S3 object key (filename)
-            text: Text to append
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Append text to an existing S3 file (downloads, appends, re-uploads)."""
         try:
             # Download existing content
             existing_text = ""
@@ -160,15 +116,7 @@ class S3StorageService:
             return False
 
     def file_exists(self, key: str) -> bool:
-        """
-        Check if a file exists in S3.
-
-        Args:
-            key: S3 object key (filename)
-
-        Returns:
-            True if file exists, False otherwise
-        """
+        """Check if a file exists in S3."""
         try:
             self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
             return True
@@ -192,14 +140,7 @@ class S3LogHandler(logging.Handler):
         log_key: str,
         max_buffer_size: int = 100,
     ):
-        """
-        Initialize S3 log handler.
-
-        Args:
-            s3_storage: S3 storage service instance
-            log_key: S3 key for the log file
-            max_buffer_size: Number of log records to buffer before flushing
-        """
+        """Initialize S3 log handler."""
         super().__init__()
         self.s3_storage = s3_storage
         self.log_key = log_key

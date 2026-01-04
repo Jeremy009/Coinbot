@@ -51,12 +51,7 @@ class BitvavoClient:
     """Wrapper for the Bitvavo API client with rate limiting and error handling."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        """
-        Initialize the Bitvavo client.
-
-        Args:
-            dry_run: If True, simulates trades without placing real orders
-        """
+        """Initialize the Bitvavo client."""
         self.dry_run = dry_run
         self._client = Bitvavo(
             {
@@ -304,18 +299,7 @@ class BitvavoClient:
     def get_candles(
         self, symbol: str, time_resolution: str, time_span: str, verbose: bool = False
     ) -> OHLCVCandles:
-        """
-        Get historic candles data from the exchange and make a candles object out of it.
-
-        Args:
-            symbol: Trading symbol (e.g., "BTC", "ETH")
-            time_resolution: Candle interval (e.g., "1m", "1h")
-            time_span: Lookback period (e.g., "1d", "1w", "1m")
-            verbose: Show progress bar if True
-
-        Returns:
-            OHLCVCandles object with historical data
-        """
+        """Get historic candles data from the exchange and make a candles object out of it."""
         # Check input
         if time_resolution not in TIME_RESOLUTIONS:
             raise CoinbotUnexpectedValueError(
@@ -492,9 +476,6 @@ class BitvavoClient:
         This is needed when the bot restarts - positions are persisted to S3,
         but dry-run balances are not. We need to sync them to prevent positions
         from being removed due to appearing "not owned".
-
-        Args:
-            positions: Dictionary of positions loaded from S3 (symbol -> position data)
         """
         if not self.dry_run:
             return

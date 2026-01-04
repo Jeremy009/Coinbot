@@ -100,11 +100,7 @@ def calculate_macd(
     slow_period: int = 26,
     signal_period: int = 9
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Calculate MACD (Moving Average Convergence Divergence)
-
-    Returns: (macd_line, signal_line, histogram)
-    """
+    """Calculate MACD (Moving Average Convergence Divergence)."""
     fast_ema = calculate_ema(prices, fast_period)
     slow_ema = calculate_ema(prices, slow_period)
 
@@ -129,11 +125,7 @@ def calculate_bollinger_bands(
     period: int = 20,
     num_std: float = 2.0
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Calculate Bollinger Bands
-
-    Returns: (upper_band, middle_band, lower_band)
-    """
+    """Calculate Bollinger Bands."""
     middle_band = calculate_sma(prices, period)
 
     std = np.full(len(prices), np.nan)
@@ -201,18 +193,6 @@ def strategy_rsi_macd(
     Sell Signal:
     - RSI above overbought level (> 70) or falling from overbought
     - MACD line crosses below signal line (bearish crossover)
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-        rsi_period: RSI calculation period
-        rsi_oversold: RSI oversold threshold
-        rsi_overbought: RSI overbought threshold
-        macd_fast: MACD fast period
-        macd_slow: MACD slow period
-        macd_signal: MACD signal period
-
-    Returns:
-        TradeSignal with recommendation and details
     """
     # Extract price data
     if isinstance(candles, OHLCVCandles):
@@ -354,15 +334,6 @@ def strategy_ema_crossover(
     Sell Signal (Death Cross):
     - Fast EMA crosses below slow EMA
     - Price below trend EMA (200) for confirmation
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-        fast_period: Fast EMA period
-        slow_period: Slow EMA period
-        trend_period: Trend EMA period
-
-    Returns:
-        TradeSignal with recommendation and details
     """
     # Extract price data
     if isinstance(candles, OHLCVCandles):
@@ -517,15 +488,6 @@ def strategy_bollinger_mean_reversion(
 
     Exit:
     - Price returns to middle band (mean)
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-        period: Bollinger Bands period
-        num_std: Number of standard deviations for bands
-        rsi_period: RSI calculation period
-
-    Returns:
-        TradeSignal with recommendation and details
     """
     # Extract price data
     if isinstance(candles, OHLCVCandles):
@@ -652,12 +614,6 @@ def strategy_multi_confluence(
     - Bollinger Bands
 
     Requires 2+ strategies to agree for a signal.
-
-    Args:
-        candles: OHLCVCandles object or DataFrame with OHLC data
-
-    Returns:
-        TradeSignal with recommendation and details
     """
     # Extract OHLC data for ATR calculation
     if isinstance(candles, OHLCVCandles):
