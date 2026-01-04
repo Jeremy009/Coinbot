@@ -485,6 +485,51 @@ class BitvavoClient:
             "status": "filled",
         }
 
+    def restore_dry_run_balances_from_positions(self, positions: dict[str, Any]) -> None:
+        """
+        Restore dry-run balances from loaded positions.
+
+        This is needed when the bot restarts - positions are persisted to S3,
+        but dry-run balances are not. We need to sync them to prevent positions
+        from being removed due to appearing "not owned".
+
+        Args:
+            positions: Dictionary of positions loaded from S3 (symbol -> position data)
+        """
+        if not self.dry_run:
+            return
+
+        logger.info("Restoring dry-run balances from loaded positions...")
+
+        # Start with initial balance
+        total_cost = 0.0
+
+        # Add all position amounts to dry-run balances
+        for symbol, position_data in positions.items():
+            amount = position_data.get("amount", 0.0)
+            cost = position_data.get("total_cost", 0.0)
+
+            self._dry_run_balances[symbol] = amount
+            total_cost += cost
+
+            logger.info(f"  Restored {amount:.8f} {symbol} (cost: €{cost:.2f})")
+
+        # Subtract total cost from EUR balance
+        initial_eur = settings.bot_dry_run_initial_balance
+        remaining_eur = initial_eur - total_cost
+
+        if remaining_eur < 0:
+            logger.warning(
+                f"Total position cost (€{total_cost:.2f}) exceeds initial balance (€{initial_eur:.2f}). "
+                f"Setting EUR balance to 0."
+            )
+            self._dry_run_balances["EUR"] = 0.0
+        else:
+            self._dry_run_balances["EUR"] = remaining_eur
+            logger.info(f"  EUR balance: €{remaining_eur:.2f} (€{total_cost:.2f} allocated to positions)")
+
+        logger.info(f"Dry-run balances restored: {len(positions)} position(s) loaded")
+
 
 # Singleton instance
 _bitvavo_client: BitvavoClient | None = None

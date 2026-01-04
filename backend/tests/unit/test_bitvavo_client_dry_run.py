@@ -238,3 +238,116 @@ class TestBitvavoClientEURHandling:
         amount = client.get_symbol_owned_amount("EUR")
 
         assert amount == initial_balance
+
+
+class TestDryRunPositionRestoration:
+    """Test restoration of dry-run balances from persisted positions."""
+
+    def test_restore_dry_run_balances_from_positions(self):
+        """
+        Test that positions loaded from S3 are correctly restored to dry-run balances.
+
+        This prevents the bug where positions were being removed because
+        dry-run balances weren't synced with loaded positions.
+        """
+        from datetime import datetime
+
+        client = BitvavoClient(dry_run=True)
+        initial_balance = client._dry_run_balances["EUR"]
+
+        # Simulate positions loaded from S3
+        positions_from_s3 = {
+            "BTC": {
+                "symbol": "BTC",
+                "buy_datetime": datetime(2026, 1, 1, 12, 0).isoformat(),
+                "amount": 0.01,
+                "buy_price": 45000.0,
+                "ath": 46000.0,
+                "total_cost": 450.0,
+                "reason_for_buying": "Test position"
+            },
+            "ETH": {
+                "symbol": "ETH",
+                "buy_datetime": datetime(2026, 1, 2, 12, 0).isoformat(),
+                "amount": 0.2,
+                "buy_price": 2500.0,
+                "ath": 2600.0,
+                "total_cost": 500.0,
+                "reason_for_buying": "Test position"
+            }
+        }
+
+        # Before restoration, owned symbols should be empty
+        owned_before = client.get_owned_symbols()
+        assert owned_before == []
+
+        # Restore balances from positions
+        client.restore_dry_run_balances_from_positions(positions_from_s3)
+
+        # After restoration, balances should include the positions
+        assert client._dry_run_balances["BTC"] == 0.01
+        assert client._dry_run_balances["ETH"] == 0.2
+
+        # EUR balance should be reduced by total cost
+        expected_eur = initial_balance - 450.0 - 500.0
+        assert client._dry_run_balances["EUR"] == expected_eur
+
+        # Owned symbols should now include BTC and ETH
+        owned_after = client.get_owned_symbols()
+        assert "BTC" in owned_after
+        assert "ETH" in owned_after
+        assert "EUR" not in owned_after  # EUR is excluded from owned_symbols
+
+    def test_restore_dry_run_balances_exceeds_initial_balance(self):
+        """Test restoration when position costs exceed initial balance."""
+        from datetime import datetime
+
+        client = BitvavoClient(dry_run=True)
+        initial_balance = client._dry_run_balances["EUR"]
+
+        # Simulate positions with costs exceeding initial balance
+        positions_from_s3 = {
+            "BTC": {
+                "symbol": "BTC",
+                "buy_datetime": datetime(2026, 1, 1, 12, 0).isoformat(),
+                "amount": 0.05,
+                "buy_price": 45000.0,
+                "ath": 46000.0,
+                "total_cost": initial_balance + 500.0,  # More than initial balance
+                "reason_for_buying": "Test position"
+            }
+        }
+
+        # Restore balances
+        client.restore_dry_run_balances_from_positions(positions_from_s3)
+
+        # BTC balance should be restored
+        assert client._dry_run_balances["BTC"] == 0.05
+
+        # EUR balance should be 0 (can't go negative)
+        assert client._dry_run_balances["EUR"] == 0.0
+
+    def test_restore_dry_run_balances_does_nothing_in_live_mode(self):
+        """Test that restoration is skipped when not in dry-run mode."""
+        from datetime import datetime
+
+        client = BitvavoClient(dry_run=False)
+
+        # Try to restore balances (should do nothing)
+        positions = {
+            "BTC": {
+                "symbol": "BTC",
+                "buy_datetime": datetime(2026, 1, 1, 12, 0).isoformat(),
+                "amount": 0.01,
+                "buy_price": 45000.0,
+                "ath": 46000.0,
+                "total_cost": 450.0,
+                "reason_for_buying": "Test"
+            }
+        }
+
+        # This should not raise an error, just return early
+        client.restore_dry_run_balances_from_positions(positions)
+
+        # _dry_run_balances should not exist in live mode
+        assert not hasattr(client, "_dry_run_balances")

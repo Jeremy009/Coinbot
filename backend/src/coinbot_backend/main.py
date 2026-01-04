@@ -655,6 +655,12 @@ class TradingBot:
                     symbol: OpenPosition(**pos_data)
                     for symbol, pos_data in data.items()
                 }
+
+                # In dry-run mode, restore balances from loaded positions
+                # This prevents positions from being removed on next run
+                if self.client.dry_run and data:
+                    self.client.restore_dry_run_balances_from_positions(data)
+
                 if not silent:
                     self.logger.info(f"Loaded {len(self.positions)} existing positions from S3 ({settings.s3_positions_key})")
             else:
