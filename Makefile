@@ -1,36 +1,29 @@
-.PHONY: help install run test lint format type-check clean docker-build docker-up docker-down docker-logs docker-shell lambda-build lambda-push lambda-deploy lambda-publish
+.PHONY: help install run test lint format type-check clean ecr-build-and-push lambda-update lambda-publish
 
 # AWS Configuration
-AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
+AWS_ACCOUNT_ID := 080328315628
 AWS_REGION ?= eu-central-1
-ECR_REPO ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/coinbot
+ECR_REPO_NAME ?= coinbot
+ECR_REPO_URI := $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/$(ECR_REPO_NAME)
 LAMBDA_FUNCTION ?= coinbot
+IMAGE_TAG ?= latest
 
 help:
 	@echo "Available commands:"
 	@echo ""
 	@echo "  Development:"
-	@echo "    make install      - Install all dependencies"
-	@echo "    make run          - Run the trading bot"
-	@echo "    make test         - Run all tests"
-	@echo "    make lint         - Run linting (ruff)"
-	@echo "    make format       - Format code (ruff)"
-	@echo "    make type-check   - Run type checking (mypy)"
-	@echo "    make clean        - Remove generated files"
-	@echo ""
-	@echo "  Docker:"
-	@echo "    make docker-build - Build Docker image"
-	@echo "    make docker-up    - Start bot in Docker (detached)"
-	@echo "    make docker-down  - Stop Docker container"
-	@echo "    make docker-logs  - View Docker logs (live)"
-	@echo "    make docker-shell - Access shell in running container"
-	@echo "    make docker-restart - Restart Docker container"
+	@echo "    make install          - Install all dependencies"
+	@echo "    make run              - Run the trading bot"
+	@echo "    make test             - Run all tests"
+	@echo "    make lint             - Run linting (ruff)"
+	@echo "    make format           - Format code (ruff)"
+	@echo "    make type-check       - Run type checking (mypy)"
+	@echo "    make clean            - Remove generated files"
 	@echo ""
 	@echo "  AWS Lambda Deployment:"
-	@echo "    make lambda-publish - Build, push to ECR, and update Lambda (all-in-one)"
-	@echo "    make lambda-build   - Build ARM64 container for Lambda"
-	@echo "    make lambda-push    - Push container to ECR"
-	@echo "    make lambda-deploy  - Update Lambda function with latest image"
+	@echo "    make lambda-publish   - Build, push to ECR, and update Lambda (all-in-one)"
+	@echo "    make ecr-build-and-push - Build ARM64 container and push to ECR"
+	@echo "    make lambda-update    - Update Lambda function with latest image"
 
 install:
 	cd backend && uv sync --all-extras
@@ -58,54 +51,22 @@ clean:
 run:
 	cd backend && uv run python -m coinbot_backend.main
 
-# Docker commands
-docker-build:
-	docker-compose build
-
-docker-up:
-	@mkdir -p data
-	docker-compose up -d
-	@echo "Bot started! View logs with: make docker-logs"
-
-docker-down:
-	docker-compose down
-
-docker-logs:
-	docker-compose logs -f
-
-docker-shell:
-	docker-compose exec coinbot /bin/bash
-
-docker-restart:
-	docker-compose restart
-
-docker-status:
-	docker-compose ps
-
 # AWS Lambda deployment commands
-lambda-build:
+ecr-build-and-push:
 	@echo "Building ARM64 container for Lambda..."
-	docker buildx build --platform linux/arm64 --provenance=false --sbom=false -t $(ECR_REPO):latest .
+	@echo "Target: $(ECR_REPO_URI):$(IMAGE_TAG)"
+	docker buildx build --platform linux/arm64 --provenance=false --sbom=false -t $(ECR_REPO_URI):$(IMAGE_TAG) --push .
 	@echo "Build complete!"
 
-lambda-push:
-	@echo "Authenticating with ECR..."
-	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
-	@echo "Pushing image to ECR..."
-	docker buildx build --platform linux/arm64 --provenance=false --sbom=false -t $(ECR_REPO):latest --push .
-	@echo "Push complete!"
-
-lambda-deploy:
-	@echo "Updating Lambda function: $(LAMBDA_FUNCTION)..."
+lambda-update:
+	@echo "Updating Lambda function: $(LAMBDA_FUNCTION)"
+	@echo "Image URI: $(ECR_REPO_URI):$(IMAGE_TAG)"
 	aws lambda update-function-code \
 		--function-name $(LAMBDA_FUNCTION) \
-		--image-uri $(ECR_REPO):latest \
-		--region $(AWS_REGION)
-	@echo "Waiting for Lambda update to complete..."
-	@aws lambda wait function-updated --function-name $(LAMBDA_FUNCTION) --region $(AWS_REGION)
+		--image-uri $(ECR_REPO_URI):$(IMAGE_TAG) \
+		--region $(AWS_REGION) \
+		--no-cli-pager
 	@echo "Lambda function updated successfully!"
 
-lambda-publish: lambda-push lambda-deploy
-	@echo ""
-	@echo "Deployment complete! Test with:"
-	@echo "  aws lambda invoke --function-name $(LAMBDA_FUNCTION) --region $(AWS_REGION) response.json"
+lambda-publish: ecr-build-and-push lambda-update
+
