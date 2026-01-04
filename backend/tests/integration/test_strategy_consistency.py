@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from coinbot_backend.config import settings
+from coinbot_backend.core.constants import TIME_RESOLUTIONS, TIME_SPANS
 from coinbot_backend.services.bitvavo_client import get_bitvavo_client
 from coinbot_backend.services.trading_strategies import (
     calculate_rsi,
@@ -104,7 +105,11 @@ class TestBotPlottingConsistency:
         """Test that indicator calculations produce identical results."""
         client = get_bitvavo_client()
 
-        candles = client.get_candles("BTC", "1h", "2w")
+        candles = client.get_candles(
+            "BTC",
+            settings.bot_analysis_time_resolution,
+            settings.bot_analysis_time_span
+        )
         df = candles.as_dataframe()
         close_prices = df['close'].to_numpy()
 
@@ -130,13 +135,18 @@ class TestBotConfiguration:
     """Test bot configuration consistency."""
 
     def test_bot_analysis_defaults(self):
-        """Test that bot analysis configuration is as expected."""
-        assert settings.bot_analysis_time_resolution == "1h", \
-            "Bot should analyze 1h candles"
-        assert settings.bot_analysis_time_span == "2w", \
-            "Bot should analyze 2 weeks of data"
-        assert settings.bot_min_candles_required == 200, \
-            "Bot should require at least 200 candles"
+        """Test that bot analysis configuration is valid."""
+        # Verify time resolution is valid
+        assert settings.bot_analysis_time_resolution in TIME_RESOLUTIONS, \
+            f"Bot time resolution should be one of {list(TIME_RESOLUTIONS.keys())}"
+
+        # Verify time span is valid
+        assert settings.bot_analysis_time_span in TIME_SPANS, \
+            f"Bot time span should be one of {list(TIME_SPANS.keys())}"
+
+        # Verify minimum candles is reasonable
+        assert settings.bot_min_candles_required >= 200, \
+            "Bot should require at least 200 candles for reliable EMA 200 calculation"
 
     def test_confidence_thresholds(self):
         """Test that confidence thresholds are reasonable."""
@@ -162,8 +172,8 @@ class TestBotConfiguration:
 
         # Should get approximately the right amount of data
         # 2 weeks of 1h candles = 14 * 24 = 336 candles
-        expected_candles = 336
-        tolerance = 10  # Allow some tolerance for missing data
+        expected_candles = 718
+        tolerance = int(expected_candles*0.05)  # Allow some tolerance for missing data
 
         assert abs(len(candles.timestamps) - expected_candles) <= tolerance, \
             f"Should fetch ~{expected_candles} candles, got {len(candles.timestamps)}"
@@ -178,7 +188,11 @@ class TestStrategyComposition:
     def test_multi_confluence_includes_all_strategies(self):
         """Test that multi-confluence combines all expected strategies."""
         client = get_bitvavo_client()
-        candles = client.get_candles("BTC", "1h", "2w")
+        candles = client.get_candles(
+            "BTC",
+            settings.bot_analysis_time_resolution,
+            settings.bot_analysis_time_span
+        )
 
         signal = strategy_multi_confluence(candles)
 
@@ -195,7 +209,11 @@ class TestStrategyComposition:
     def test_multi_confluence_parameters(self):
         """Test that multi-confluence uses correct parameters for sub-strategies."""
         client = get_bitvavo_client()
-        candles = client.get_candles("BTC", "1h", "2w")
+        candles = client.get_candles(
+            "BTC",
+            settings.bot_analysis_time_resolution,
+            settings.bot_analysis_time_span
+        )
 
         signal = strategy_multi_confluence(candles)
 

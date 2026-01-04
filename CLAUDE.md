@@ -9,6 +9,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Use plain text for all output and logging
 - Keep all messages professional and text-based
 
+**Import Organization**
+- Always place imports at the top of the file (module level)
+- Never use inline imports inside functions or methods unless there's a specific reason (circular imports, conditional imports, etc.)
+- Group imports in standard order:
+  1. Standard library imports
+  2. Third-party imports
+  3. Local application imports
+- Use absolute imports: `from coinbot_backend.config import settings`
+
 ## Project Overview
 
 Coinbot is a stateless cryptocurrency trading bot built with:
@@ -307,7 +316,7 @@ from coinbot_backend.services.bitvavo_client import get_bitvavo_client
 from coinbot_backend.services.technical_analysis_plot import plot_technical_analysis
 
 client = get_bitvavo_client()
-candles = client.get_candles("BTC", "1h", "2w")
+candles = client.get_candles("BTC", "1h", "1m")
 
 # Show interactive plot
 plot_technical_analysis(candles, show=True)

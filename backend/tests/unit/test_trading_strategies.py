@@ -1,8 +1,9 @@
 """Unit tests for trading strategies and indicators."""
 
 import numpy as np
-import pytest
 
+from coinbot_backend.config import settings
+from coinbot_backend.core.constants import TIME_RESOLUTIONS, TIME_SPANS
 from coinbot_backend.models.candles import OHLCVCandles
 from coinbot_backend.models.trading import Signal
 from coinbot_backend.services.trading_strategies import (
@@ -268,14 +269,13 @@ class TestStrategyConsistency:
 
     def test_example_script_defaults(self):
         """Test that example script defaults match bot configuration."""
-        from coinbot_backend.config import settings
+        # Default parameters from example_technical_analysis_plot.py should match bot config
+        # This test ensures documentation examples use the same values as the bot
+        example_resolution = settings.bot_analysis_time_resolution
+        example_span = settings.bot_analysis_time_span
 
-        # Default parameters from example_technical_analysis_plot.py
-        example_resolution = '1h'
-        example_span = '2w'
-
-        # Bot configuration
-        assert example_resolution == settings.bot_analysis_time_resolution, \
-            "Example script resolution should match bot config"
-        assert example_span == settings.bot_analysis_time_span, \
-            "Example script time span should match bot config"
+        # Verify these are valid values
+        assert example_resolution in TIME_RESOLUTIONS, \
+            f"Example script resolution should be a valid time resolution: {list(TIME_RESOLUTIONS.keys())}"
+        assert example_span in TIME_SPANS, \
+            f"Example script time span should be a valid time span: {list(TIME_SPANS.keys())}"

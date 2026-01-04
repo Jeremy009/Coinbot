@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     s3_positions_key: str = "positions.json"  # S3 key for positions file
     s3_trades_key: str = "trades.json"  # S3 key for trades file
     s3_enable_log_upload: bool = True  # Enable uploading logs to S3
-    s3_run_key_prefix: str = "runs/"  # S3 key prefix for run folders (logs + charts)
+    s3_run_key_prefix: str = "test_runs/"  # S3 key prefix for run folders (logs + charts)
     s3_log_buffer_size: int = 50  # Number of log records to buffer before uploading
 
     # Generic Bot Configuration
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     bot_entry_min_confidence: float = 0.60  # Minimum confidence for opening new positions
     bot_exit_min_confidence: float = 0.65  # Minimum confidence for closing positions
     bot_analysis_time_resolution: str = "1h"  # Time resolution for technical analysis
-    bot_analysis_time_span: str = "2w"  # Time span for historical data (2w @ 1h = 336 candles)
+    bot_analysis_time_span: str = "1m"  # Time span for historical data (1m @ 1h = 720 candles)
     bot_min_candles_required: int = 200  # Minimum candles needed for analysis
     bot_buy_delay_seconds: float = 1.0  # Delay between consecutive buy orders
 

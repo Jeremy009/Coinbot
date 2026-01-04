@@ -57,7 +57,8 @@ def plot_technical_analysis(
     show: bool = False,
     save_path: Optional[str] = None,
     return_bytes: bool = False,
-    figsize: tuple[float, float] = (14, 10)
+    figsize: tuple[float, float] = (14*1.5, 10*1.5),
+    skip_first_n_candles: int = 200
 ) -> Figure | bytes:
     """
     Create a comprehensive technical analysis chart with all indicators.
@@ -70,6 +71,8 @@ def plot_technical_analysis(
         save_path: If provided, save the plot to this path
         return_bytes: If True, return PNG bytes instead of Figure object
         figsize: Figure size in inches (width, height)
+        skip_first_n_candles: Number of candles to skip from the beginning for plotting
+                             (indicators are still calculated on full data for accuracy)
 
     Returns:
         Matplotlib Figure object or PNG bytes (if return_bytes=True)
@@ -126,6 +129,41 @@ def plot_technical_analysis(
 
     strategies_text = " | ".join(individual_signals)
 
+    # Skip first N candles for plotting (but keep full data for indicator calculations)
+    # This makes the chart cleaner by only showing data where all indicators are valid
+    if skip_first_n_candles > 0 and len(df) > skip_first_n_candles:
+        df_plot = df.iloc[skip_first_n_candles:].copy()
+        # Reset index to start from 0 for plotting
+        df_plot.reset_index(drop=True, inplace=True)
+
+        # Slice all indicator arrays
+        ema_12_plot = ema_12[skip_first_n_candles:]
+        ema_50_plot = ema_50[skip_first_n_candles:]
+        ema_200_plot = ema_200[skip_first_n_candles:]
+        bb_upper_plot = bb_upper[skip_first_n_candles:]
+        bb_middle_plot = bb_middle[skip_first_n_candles:]
+        bb_lower_plot = bb_lower[skip_first_n_candles:]
+        rsi_plot = rsi[skip_first_n_candles:]
+        macd_line_plot = macd_line[skip_first_n_candles:]
+        macd_signal_plot = macd_signal[skip_first_n_candles:]
+        macd_histogram_plot = macd_histogram[skip_first_n_candles:]
+
+        # Adjust buy_datetime index if provided
+        buy_index_offset = skip_first_n_candles if buy_datetime is not None else 0
+    else:
+        df_plot = df
+        ema_12_plot = ema_12
+        ema_50_plot = ema_50
+        ema_200_plot = ema_200
+        bb_upper_plot = bb_upper
+        bb_middle_plot = bb_middle
+        bb_lower_plot = bb_lower
+        rsi_plot = rsi
+        macd_line_plot = macd_line
+        macd_signal_plot = macd_signal
+        macd_histogram_plot = macd_histogram
+        buy_index_offset = 0
+
     # Create figure with subplots using constrained_layout (better than tight_layout)
     fig = plt.figure(figsize=figsize, constrained_layout=True)
     title_with_signal = f"{symbol} - Technical Analysis\n{signal_text}\n{strategies_text}"
@@ -137,38 +175,43 @@ def plot_technical_analysis(
     # 1. CANDLESTICK CHART with EMAs and Bollinger Bands
     ax1 = fig.add_subplot(gs[0])
     _plot_candlesticks_with_indicators(
-        ax1, df, ema_12, ema_50, ema_200, bb_upper, bb_middle, bb_lower
+        ax1, df_plot, ema_12_plot, ema_50_plot, ema_200_plot, bb_upper_plot, bb_middle_plot, bb_lower_plot
     )
 
     # 2. RSI
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    _plot_rsi(ax2, df.index, rsi)
+    _plot_rsi(ax2, df_plot.index, rsi_plot)
 
     # 3. MACD
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
-    _plot_macd(ax3, df.index, macd_line, macd_signal, macd_histogram)
+    _plot_macd(ax3, df_plot.index, macd_line_plot, macd_signal_plot, macd_histogram_plot)
 
     # 4. VOLUME
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
-    _plot_volume(ax4, df)
+    _plot_volume(ax4, df_plot)
 
     # Add buy marker if provided (green vertical line)
     if buy_datetime is not None:
-        # Find the index corresponding to the buy datetime
-        buy_index = None
+        # Find the index corresponding to the buy datetime in the original data
+        buy_index_original = None
         for i, dt in enumerate(candles.timelabels):
             if isinstance(dt, datetime) and dt >= buy_datetime:
-                buy_index = i
+                buy_index_original = i
                 break
 
-        if buy_index is not None:
-            # Add vertical line to all subplots
-            for ax in [ax1, ax2, ax3, ax4]:
-                ax.axvline(x=buy_index, color='green', linestyle='--', linewidth=1.5,
-                          alpha=0.7, label='Buy' if ax == ax1 else None)
+        if buy_index_original is not None:
+            # Adjust for skipped candles (buy_index in the plotted data)
+            buy_index_plot = buy_index_original - buy_index_offset
 
-            # Update legend on first subplot to include buy marker
-            ax1.legend(loc='upper left', fontsize=8, ncol=4)
+            # Only draw marker if it's within the plotted range
+            if buy_index_plot >= 0:
+                # Add vertical line to all subplots
+                for ax in [ax1, ax2, ax3, ax4]:
+                    ax.axvline(x=buy_index_plot, color='green', linestyle='--', linewidth=1.5,
+                              alpha=0.7, label='Buy' if ax == ax1 else None)
+
+                # Update legend on first subplot to include buy marker
+                ax1.legend(loc='upper left', fontsize=8, ncol=4)
 
     # Format x-axis (only show on bottom subplot)
     plt.setp(ax1.get_xticklabels(), visible=False)
@@ -176,7 +219,8 @@ def plot_technical_analysis(
     plt.setp(ax3.get_xticklabels(), visible=False)
 
     # Add time labels to bottom subplot
-    _format_time_axis(ax4, candles)
+    # Pass the offset so the time axis knows which candles are being displayed
+    _format_time_axis(ax4, candles, skip_first_n_candles)
 
     # Save or return bytes
     if return_bytes:
@@ -323,7 +367,7 @@ def _plot_volume(ax: plt.Axes, df: pd.DataFrame) -> None:
     ax.grid(True, alpha=0.3)
 
 
-def _format_time_axis(ax: plt.Axes, candles: OHLCVCandles) -> None:
+def _format_time_axis(ax: plt.Axes, candles: OHLCVCandles, skip_offset: int = 0) -> None:
     """Format the x-axis with time labels at 00h00 and 12h00."""
     from datetime import datetime
 
@@ -338,21 +382,27 @@ def _format_time_axis(ax: plt.Axes, candles: OHLCVCandles) -> None:
             if isinstance(dt, datetime):
                 # Only show labels at 00:00 and 12:00
                 if dt.hour in [0, 12] and dt.minute == 0:
-                    label_indices.append(i)
-                    # Format as "DD-MM HHhMM" (e.g., "02-01 00h00")
-                    label_values.append(dt.strftime('%d-%m %Hh%M'))
+                    # Adjust index for skipped candles
+                    plot_index = i - skip_offset
+                    if plot_index >= 0:  # Only include if within plotted range
+                        label_indices.append(plot_index)
+                        # Format as "DD-MM HHhMM" (e.g., "02-01 00h00")
+                        label_values.append(dt.strftime('%d-%m %Hh%M'))
 
     # If no labels found (e.g., short timeframe), fallback to evenly spaced
     if not label_indices:
-        mod = max(1, num_candles // 20)
-        label_indices = [i for i in range(num_candles) if i % mod == 0]
+        num_plotted_candles = num_candles - skip_offset
+        mod = max(1, num_plotted_candles // 20)
+        label_indices = [i for i in range(num_plotted_candles) if i % mod == 0]
         if hasattr(candles, 'timelabels') and candles.timelabels:
             for i in label_indices:
-                dt = candles.timelabels[i]
-                if isinstance(dt, datetime):
-                    label_values.append(dt.strftime('%d-%m %Hh%M'))
-                else:
-                    label_values.append(str(dt))
+                original_index = i + skip_offset
+                if original_index < len(candles.timelabels):
+                    dt = candles.timelabels[original_index]
+                    if isinstance(dt, datetime):
+                        label_values.append(dt.strftime('%d-%m %Hh%M'))
+                    else:
+                        label_values.append(str(dt))
         else:
             label_values = [str(i) for i in label_indices]
 
